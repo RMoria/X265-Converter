@@ -1,0 +1,5 @@
+# PowerShell op Windows wil CRLF; laat git daar niet mee rommelen.
+*.ps1  text eol=crlf
+*.cmd  text eol=crlf
+*.md   text eol=lf
+*.sh   text eol=lf

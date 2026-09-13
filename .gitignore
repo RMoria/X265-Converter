@@ -1,0 +1,20 @@
+# ffmpeg hoort niet in de repository: bijna 300 MB aan binaries, en je
+# haalt hem toch beter zelf op bij gyan.dev of BtbN.
+ffmpeg/
+
+# Persoonlijke gegevens: het instellingenbestand bevat je bronmappen
+# (inclusief netwerkpaden) en de cumulatieve totalen.
+X265-Converter.settings.json
+X265-Converter.settings.json.tmp
+
+# Logboeken en rapporten
+X265-Converter.error.log
+Diagnose-Bestand.txt
+Controleer-Geluid.rapport*.csv
+
+# Werkbestanden
+x265_*.tmp.mkv
+x265_*.mux.mkv
+x265_*.pad.mkv
+x265_*.progress.txt
+_to_delete/
