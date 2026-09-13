@@ -506,7 +506,7 @@
                   </DataTemplate>
                 </DataGridTemplateColumn.CellTemplate>
               </DataGridTemplateColumn>
-              <DataGridTextColumn Header="Nr" Binding="{Binding QueueText}" Width="44" IsReadOnly="True">
+              <DataGridTextColumn Header="Nr" Binding="{Binding QueueText}" Width="54" IsReadOnly="True">
                 <DataGridTextColumn.ElementStyle>
                   <Style TargetType="TextBlock">
                     <Setter Property="FontFamily" Value="Consolas"/>

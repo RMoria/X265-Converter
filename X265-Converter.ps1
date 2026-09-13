@@ -29,7 +29,20 @@ param(
     # Wordt door X265-Converter.cmd meegegeven. Betekent: dit proces
     # heeft een consolevenster geërfd, dus meteen opnieuw starten als
     # proces ZONDER console en deze instantie afsluiten.
-    [switch]$FromLauncher
+    [switch]$FromLauncher,
+
+    # Aanroep vanuit een ander script of programma: één bestand omzetten.
+    # -In is het volledige pad van de bron.
+    [string]$In,
+
+    # Het volledige pad van het resultaat. Dit wordt LETTERLIJK gebruikt:
+    # er wordt geen '.x265' achter geplakt en er komt geen '(2)' bij als
+    # het al bestaat. Wie het pad zelf opgeeft, krijgt precies dat pad.
+    # Weggelaten? Dan gaat het resultaat als <naam>.x265.mkv naast de bron.
+    #
+    # Draait er al een instantie, dan wordt de opdracht daaraan doorgegeven
+    # (achteraan de wachtrij) en sluit deze aanroep zichzelf meteen af.
+    [string]$Out
 )
 
 # ---------------------------------------------------------------------
@@ -44,8 +57,8 @@ param(
 #  LEESMIJ-X265-Converter.md.
 # ---------------------------------------------------------------------
 $AppName    = 'X265 Converter'
-$AppVersion = '1.1'
-$AppDate    = '2026-09-12'
+$AppVersion = '1.2'
+$AppDate    = '2026-09-13'
 $AppTitle   = 'Video naar H.265 / HEVC'
 $AppStamp   = ('{0} {1} ({2})' -f $AppName, $AppVersion, $AppDate)
 
@@ -67,13 +80,23 @@ $AppStamp   = ('{0} {1} ({2})' -f $AppName, $AppVersion, $AppDate)
 # ---------------------------------------------------------------------
 
 function Get-RelaunchArguments {
-    param([string]$ScriptPath, [string[]]$Folders)
+    param([string]$ScriptPath, [string[]]$Folders, [string]$InFile = '', [string]$OutFile = '')
 
     $cmd = "& '" + ($ScriptPath -replace "'", "''") + "'"
     if ($Folders) {
         $q = @()
         foreach ($f in $Folders) { $q += ("'" + ($f -replace "'", "''") + "'") }
         if ($q.Count -gt 0) { $cmd = $cmd + ' -Path ' + ($q -join ',') }
+    }
+
+    # -In en -Out moeten mee naar de instantie die blijft leven, anders
+    # gaat de opdracht van een aanroepend programma verloren op het moment
+    # dat het script zichzelf zonder console herstart.
+    if (-not [string]::IsNullOrWhiteSpace($InFile)) {
+        $cmd = $cmd + " -In '" + ($InFile -replace "'", "''") + "'"
+        if (-not [string]::IsNullOrWhiteSpace($OutFile)) {
+            $cmd = $cmd + " -Out '" + ($OutFile -replace "'", "''") + "'"
+        }
     }
     return ('-NoProfile -ExecutionPolicy Bypass -STA -Command "' + $cmd + '"')
 }
@@ -93,7 +116,7 @@ if ($FromLauncher) {
     # -Path geeft dan "parameter specified more than once". Daarom -Command
     # met PowerShell-notatie, waarin enkele aanhalingstekens verdubbeld
     # worden.
-    $argLine = Get-RelaunchArguments -ScriptPath $self -Folders $Path
+    $argLine = Get-RelaunchArguments -ScriptPath $self -Folders $Path -InFile $In -OutFile $Out
 
     $relaunched = $false
     try {
@@ -133,7 +156,7 @@ if ([Threading.Thread]::CurrentThread.GetApartmentState() -ne [Threading.Apartme
     $hostExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     if (-not (Test-Path -LiteralPath $hostExe)) { $hostExe = 'powershell.exe' }
 
-    $argLine = Get-RelaunchArguments -ScriptPath $self -Folders $Path
+    $argLine = Get-RelaunchArguments -ScriptPath $self -Folders $Path -InFile $In -OutFile $Out
 
     try {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -527,6 +550,10 @@ namespace X265
         public int    QueuePos   { get; set; }
         public double EncodeSec  { get; set; }
         public string RawCodec   { get; set; }
+
+        // Vast uitvoerpad, meegegeven met -Out op de opdrachtregel. Leeg
+        // betekent: zelf een naam afleiden (<naam>.x265.mkv).
+        public string OutPath    { get; set; }
     }
 }
 '@
@@ -599,6 +626,79 @@ if (-not (Test-DirWritable $DataDir)) {
     }
 }
 
+# ---------------------------------------------------------------------
+#  Eén instantie, en een postbus voor opdrachten
+#
+#  Wordt het script nog een keer aangeroepen terwijl het al draait - met
+#  -In/-Out vanuit een ander programma, of gewoon door nog eens te
+#  dubbelklikken - dan hoort er geen tweede venster te komen. De nieuwe
+#  opdracht gaat naar de postbus van de draaiende instantie en die zet hem
+#  achteraan de wachtrij.
+#
+#  Een named mutex is hier het juiste gereedschap: hij verdwijnt vanzelf
+#  als het proces stopt, ook bij een crash. Een lock-bestand zou na een
+#  harde afsluiting blijven staan en het programma onstartbaar maken.
+#  'Local\' en niet 'Global\': per aangemelde gebruiker is genoeg, en
+#  Global vraagt rechten die op een beheerde machine ontbreken.
+# ---------------------------------------------------------------------
+$InboxDir  = Join-Path $DataDir 'opdrachten'
+$MutexNaam = 'Local\X265Converter.SingleInstance'
+
+$script:AppMutex  = $null
+$script:IsPrimair = $true
+try {
+    $nieuw = $false
+    $script:AppMutex  = New-Object System.Threading.Mutex($true, $MutexNaam, [ref]$nieuw)
+    $script:IsPrimair = $nieuw
+}
+catch {
+    # Bij twijfel gewoon starten: een programma dat niet opstart is erger
+    # dan twee vensters.
+    $script:IsPrimair = $true
+}
+
+function Write-Opdracht {
+    param([string]$InPad, [string]$UitPad)
+
+    try {
+        if (-not (Test-Path -LiteralPath $InboxDir)) {
+            New-Item -ItemType Directory -Path $InboxDir -Force -ErrorAction Stop | Out-Null
+        }
+        $naam = 'opdracht_' + (Get-Date -Format 'yyyyMMdd_HHmmss_fff') + '_' +
+                ([guid]::NewGuid().ToString('N').Substring(0,8)) + '.json'
+        $pad  = Join-Path $InboxDir $naam
+
+        # eerst als .tmp wegschrijven en dan hernoemen, anders kan de
+        # andere instantie een half geschreven bestand oppakken
+        $tmp = $pad + '.tmp'
+        ([pscustomobject]@{
+            In   = $InPad
+            Out  = $UitPad
+            Tijd = (Get-Date).ToString('s')
+        } | ConvertTo-Json) | Set-Content -LiteralPath $tmp -Encoding UTF8 -Force
+        Move-Item -LiteralPath $tmp -Destination $pad -Force
+        return $true
+    }
+    catch {
+        Write-Host ("Kon de opdracht niet doorgeven: {0}" -f $_.Exception.Message)
+        return $false
+    }
+}
+
+# Draait er al een instantie? Dan opdracht doorgeven en klaar.
+if (-not $script:IsPrimair) {
+    if (-not [string]::IsNullOrWhiteSpace($In)) {
+        if (Write-Opdracht -InPad $In -UitPad $Out) {
+            Write-Host ("X265 Converter draait al; {0} is achteraan de wachtrij gezet." -f $In)
+        }
+    }
+    else {
+        Write-Host 'X265 Converter draait al.'
+    }
+    try { if ($script:AppMutex) { $script:AppMutex.Dispose() } } catch { }
+    return
+}
+
 $SettingsFile = Join-Path $DataDir 'X265-Converter.settings.json'
 $ErrorLogFile = Join-Path $DataDir 'X265-Converter.error.log'
 
@@ -632,6 +732,18 @@ $script:SmartRetry = $true   # herpoging met alleen beeld en geluid als het misg
 # signaal gaat af voordat het programma zichzelf eventueel afsluit.
 # Leeg maken zet het uit.
 $script:KeepAwakeSignal = 'KeepAwakeStopSignal'
+
+# Bron eerst naar de werkmap kopieren voordat er wordt geencodeerd.
+# ffmpeg leest een bestand niet in een ruk maar de hele encode lang; staat
+# de bron op een share, dan is dat een half uur netwerkverkeer en
+# schijfactiviteit op de andere machine. Eenmaal overhalen is rustiger.
+# Het kopieren van het volgende bestand loopt mee met de huidige encode,
+# dus er staat hooguit een bestand vooruit klaar.
+$script:PrefetchToWorkDir  = $true
+
+# Alleen doen voor bronnen op een netwerkpad. Een lokale bron kopieren
+# levert niets op en kost alleen schijfruimte.
+$script:PrefetchOnlyNetwork = $true
 
 # Wachtrij bewaren over een herstart heen. Staat UIT: bij het opstarten
 # begint de lijst leeg, zodat een nieuwe scan niet bij de resten van de
@@ -1372,7 +1484,7 @@ function Write-Log {
                   </DataTemplate>
                 </DataGridTemplateColumn.CellTemplate>
               </DataGridTemplateColumn>
-              <DataGridTextColumn Header="Nr" Binding="{Binding QueueText}" Width="44" IsReadOnly="True">
+              <DataGridTextColumn Header="Nr" Binding="{Binding QueueText}" Width="54" IsReadOnly="True">
                 <DataGridTextColumn.ElementStyle>
                   <Style TargetType="TextBlock">
                     <Setter Property="FontFamily" Value="Consolas"/>
@@ -1553,6 +1665,75 @@ $ScanWorker = {
         }
 
         return [pscustomobject]@{ Codec = $codec; DurationSec = $dur }
+    }
+
+    # =================================================================
+    #  MODUS 'opdracht' : losse bestanden die via -In/-Out zijn
+    #                     aangeleverd, elk met een vast uitvoerpad
+    #
+    #  Het probewerk gebeurt hier en niet op de UI-draad: een bestand op
+    #  een share dat niet reageert kost seconden, en daar mag het venster
+    #  niet op vastlopen.
+    # =================================================================
+    if ($sync.ScanMode -eq 'opdracht') {
+        try {
+            $opdrachten = @($sync.ScanSettings.Jobs)
+            $sync.ScanTotal = $opdrachten.Count
+            W ("{0} opdracht(en) van de opdrachtregel verwerken." -f $opdrachten.Count)
+
+            foreach ($opd in $opdrachten) {
+
+                if ($sync.ScanCancel) { break }
+
+                $sync.ScanChecked = $sync.ScanChecked + 1
+                $inPad  = [string]$opd.In
+                $uitPad = [string]$opd.Out
+                $sync.ScanStatus = "Opdracht $($sync.ScanChecked)/$($sync.ScanTotal): $([IO.Path]::GetFileName($inPad))"
+
+                $fi = $null
+                try { $fi = Get-Item -LiteralPath $inPad -ErrorAction Stop } catch { }
+                if ($fi -eq $null) {
+                    W ("Opdracht overgeslagen, bestand niet gevonden: {0}" -f $inPad) 'FOUT'
+                    continue
+                }
+
+                $info = Probe-File $fi.FullName
+                if ($info -eq $null) {
+                    W ("Opdracht overgeslagen, geen leesbare video: {0}" -f $inPad) 'FOUT'
+                    continue
+                }
+
+                $isHevc = ($info.Codec -match '(?i)^(hevc|h265|x265)$')
+                if ($isHevc) {
+                    W ("Opdracht overgeslagen, is al HEVC: {0}" -f $inPad) 'WAARS'
+                    $sync.ScanSkippedHevc = $sync.ScanSkippedHevc + 1
+                    continue
+                }
+
+                $sync.ScanFound = $sync.ScanFound + 1
+                $sync.NewJobs.Enqueue([pscustomobject]@{
+                    FullPath    = $fi.FullName
+                    Name        = $fi.Name
+                    Folder      = $fi.DirectoryName
+                    SizeBytes   = [long]$fi.Length
+                    DurationSec = [double]$info.DurationSec
+                    Codec       = $info.Codec
+                    IsHevc      = $false
+                    Include     = $true
+                    OutPath     = $uitPad
+                    AutoQueue   = $true
+                })
+                W ("Opdracht toegevoegd: {0}{1}" -f $fi.FullName,
+                    $(if ($uitPad) { " -> $uitPad" } else { '' }))
+            }
+        }
+        catch {
+            W ("Fout bij het verwerken van opdrachten: {0}" -f $_.Exception.Message) 'FOUT'
+        }
+        finally {
+            $sync.ScanBusy = $false
+        }
+        return
     }
 
     # =================================================================
@@ -1833,7 +2014,22 @@ $ConvertWorker = {
     }
 
     function New-OutputPath {
-        param([string]$SourcePath)
+        param([string]$SourcePath, [string]$Fixed = '')
+
+        # Is er met -Out een naam meegegeven, dan is dat de naam. Geen
+        # '.x265' erachter, geen '(2)' erbij: wie het pad zelf opgeeft
+        # verwacht precies dat pad. Wel de map aanmaken als die ontbreekt.
+        if (-not [string]::IsNullOrWhiteSpace($Fixed)) {
+            try {
+                $od = [IO.Path]::GetDirectoryName($Fixed)
+                if ($od -and -not (Test-Path -LiteralPath $od)) {
+                    New-Item -ItemType Directory -Path $od -Force -ErrorAction Stop | Out-Null
+                }
+            }
+            catch { W ("Uitvoermap kon niet worden gemaakt: {0}" -f $_.Exception.Message) 'WAARS' }
+            return $Fixed
+        }
+
         $dir   = [IO.Path]::GetDirectoryName($SourcePath)
         $base  = Get-CleanBase ([IO.Path]::GetFileNameWithoutExtension($SourcePath))
         $cand  = Join-Path $dir ($base + '.x265.mkv')
@@ -2745,6 +2941,178 @@ $ConvertWorker = {
     }
 
     # -----------------------------------------------------------------
+    #  Bron eerst lokaal zetten
+    #
+    #  Waarom: ffmpeg leest een bestand niet in één ruk maar blijft er de
+    #  hele encode lang uit lezen. Staat de bron op een share, dan levert
+    #  dat een half uur lang netwerkverkeer en schijfactiviteit op de
+    #  andere machine op. Eén keer in zijn geheel overhalen is voor beide
+    #  kanten rustiger, en de encode leest daarna van een lokale schijf.
+    #
+    #  Het kopieren van het VOLGENDE bestand loopt mee terwijl het huidige
+    #  wordt geencodeerd; er staat dus hooguit één bestand vooruit klaar,
+    #  niet de hele wachtrij. Daarvoor is robocopy handig: die draait als
+    #  eigen proces, dus de lus blijft ondertussen gewoon lopen.
+    #
+    #  Opruimen is hier belangrijker dan snelheid. Een achtergebleven kopie
+    #  van een paar GB is erger dan een kopie die opnieuw moet, dus elke
+    #  uitgang - geslaagd, mislukt, afgebroken, afsluiten - ruimt op.
+    # -----------------------------------------------------------------
+    function Test-NetworkPath {
+        param([string]$Path)
+
+        if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+        if ($Path.StartsWith('\\')) { return $true }      # UNC
+
+        # Toegewezen netwerkschijf (letter die naar een share wijst)
+        try {
+            $root = [IO.Path]::GetPathRoot($Path)
+            if ([string]::IsNullOrWhiteSpace($root)) { return $false }
+            $d = New-Object System.IO.DriveInfo $root
+            return ($d.DriveType -eq [System.IO.DriveType]::Network)
+        }
+        catch { return $false }
+    }
+
+    function Start-Prefetch {
+        param($Job)
+
+        if ($Job -eq $null) { return $null }
+        if (-not $st.PrefetchToWorkDir) { return $null }
+        if ($st.PrefetchOnlyNetwork -and -not (Test-NetworkPath $Job.FullPath)) { return $null }
+
+        $bron = [string]$Job.FullPath
+        $naam = [IO.Path]::GetFileName($bron)
+        if ([string]::IsNullOrWhiteSpace($naam)) { return $null }
+
+        # Past het? Er komt straks ook een encode-uitvoer in dezelfde map,
+        # dus vragen om het dubbele plus wat lucht.
+        try {
+            $nodig = [double]$Job.SizeBytes * 2 + 2GB
+            $vrij  = -1
+            try {
+                $di = New-Object System.IO.DriveInfo ([IO.Path]::GetPathRoot($st.WorkDir))
+                if ($di.IsReady) { $vrij = [double]$di.AvailableFreeSpace }
+            } catch { }
+            if ($vrij -ge 0 -and $vrij -lt $nodig) {
+                W ("Te weinig ruimte in de werkmap om {0} eerst lokaal te zetten; er wordt rechtstreeks gelezen." -f $naam) 'WAARS'
+                return $null
+            }
+        }
+        catch { }
+
+        $dir = Join-Path $st.WorkDir ("x265_pre_" + [guid]::NewGuid().ToString('N'))
+        try { New-Item -ItemType Directory -Path $dir -Force -ErrorAction Stop | Out-Null }
+        catch { W ("Kon geen map voor de lokale kopie maken: {0}" -f $_.Exception.Message) 'WAARS'; return $null }
+
+        $doel = Join-Path $dir $naam
+
+        # CopyToAsync doet het kopieerwerk op de threadpool, dus de lus
+        # hieronder blijft gewoon draaien en de encode van het vorige
+        # bestand loopt ondertussen door. Geen apart proces nodig, en de
+        # positie van de doelstream geeft meteen de voortgang.
+        $res = [pscustomobject]@{
+            Job = $Job; Task = $null; In = $null; Out = $null
+            Dir = $dir; Target = $doel; Bytes = [long]$Job.SizeBytes
+        }
+
+        try {
+            $res.In  = [System.IO.File]::Open($bron, [System.IO.FileMode]::Open,
+                                              [System.IO.FileAccess]::Read,
+                                              [System.IO.FileShare]::ReadWrite)
+            $res.Out = [System.IO.File]::Create($doel)
+            $res.Task = $res.In.CopyToAsync($res.Out, 1048576)
+        }
+        catch {
+            try { if ($res.Out) { $res.Out.Dispose() } } catch { }
+            try { if ($res.In)  { $res.In.Dispose() } }  catch { }
+            Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+            W ("Lokale kopie kon niet worden gestart: {0}" -f $_.Exception.Message) 'WAARS'
+            return $null
+        }
+
+        W ("Lokale kopie gestart: {0}" -f $naam)
+        return $res
+    }
+
+    function Stop-Prefetch {
+        param($Pre)
+
+        if ($Pre -eq $null) { return }
+
+        # De streams sluiten breekt een lopende kopie af.
+        try { if ($Pre.Out) { $Pre.Out.Dispose() } } catch { }
+        try { if ($Pre.In)  { $Pre.In.Dispose() } }  catch { }
+        $Pre.Out = $null
+        $Pre.In  = $null
+
+        if ($Pre.Dir) { Remove-Item -LiteralPath $Pre.Dir -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    # Wacht tot de kopie klaar is. Geeft het lokale pad terug, of een lege
+    # string als het niet gelukt is - dan wordt er van de bron gelezen,
+    # want dat werkte altijd al.
+    function Complete-Prefetch {
+        param($Pre)
+
+        if ($Pre -eq $null) { return '' }
+        if ($Pre.Task -eq $null) { Stop-Prefetch $Pre; return '' }
+
+        while (-not $Pre.Task.IsCompleted) {
+            if ($sync.Cancel) { Stop-Prefetch $Pre; return '' }
+            $sync.CurPhase = 'Bron lokaal zetten'
+            if ($Pre.Bytes -gt 0) {
+                try {
+                    $p = 100.0 * [double]$Pre.Out.Position / [double]$Pre.Bytes
+                    if ($p -gt 100) { $p = 100 }
+                    $sync.CurPhasePct = $p
+                } catch { }
+            }
+            Update-Timers
+            Start-Sleep -Milliseconds 250
+        }
+
+        $fout = ''
+        if ($Pre.Task.IsFaulted) {
+            $fout = 'onbekende fout'
+            try { $fout = $Pre.Task.Exception.GetBaseException().Message } catch { }
+        }
+        elseif ($Pre.Task.IsCanceled) { $fout = 'afgebroken' }
+
+        # eerst netjes afsluiten, anders staat niet alles op schijf
+        try { if ($Pre.Out) { $Pre.Out.Flush(); $Pre.Out.Dispose(); $Pre.Out = $null } } catch { }
+        try { if ($Pre.In)  { $Pre.In.Dispose();  $Pre.In  = $null } } catch { }
+
+        if ($fout) {
+            W ("Lokale kopie mislukt ({0}); er wordt rechtstreeks van de bron gelezen." -f $fout) 'WAARS'
+            Stop-Prefetch $Pre
+            return ''
+        }
+
+        if (-not (Test-Path -LiteralPath $Pre.Target)) {
+            W 'Lokale kopie is er niet; er wordt rechtstreeks van de bron gelezen.' 'WAARS'
+            Stop-Prefetch $Pre
+            return ''
+        }
+
+        # Even groot als de bron? Zo niet, dan is de kopie niet te
+        # vertrouwen en is rechtstreeks lezen beter dan een half bestand
+        # encoderen.
+        try {
+            $kopLen = (Get-Item -LiteralPath $Pre.Target).Length
+            if ($Pre.Bytes -gt 0 -and $kopLen -ne $Pre.Bytes) {
+                W ("Lokale kopie is {0} bytes en de bron {1}; kopie verworpen." -f $kopLen, $Pre.Bytes) 'WAARS'
+                Stop-Prefetch $Pre
+                return ''
+            }
+        }
+        catch { }
+
+        $sync.CurPhasePct = 0
+        return [string]$Pre.Target
+    }
+
+    # -----------------------------------------------------------------
     #  De wachtrij: altijd de bovenste pakken
     #
     #  Er is met opzet GEEN index. De bovenste regel wordt onder een lock
@@ -2753,6 +3121,20 @@ $ConvertWorker = {
     #  overgeslagen of dubbel gedaan. Het bestand dat onder handen is zit
     #  niet meer in de lijst maar in $sync.CurrentJob.
     # -----------------------------------------------------------------
+    # Kijken wat er bovenaan ligt zonder het eraf te halen. Nodig om
+    # alvast het volgende bestand te kunnen ophalen terwijl het huidige
+    # nog draait. Dat de gebruiker daarna de rij nog kan omgooien is geen
+    # probleem: bij het oppakken wordt gecontroleerd of de kopie ook echt
+    # bij dat bestand hoort.
+    function Peek-NextJob {
+        $top = $null
+        $q = $sync.Queue
+        [System.Threading.Monitor]::Enter($q.SyncRoot)
+        try { if ($q.Count -gt 0) { $top = $q[0] } }
+        finally { [System.Threading.Monitor]::Exit($q.SyncRoot) }
+        return $top
+    }
+
     function Get-NextJob {
         $taken = $null
         $q = $sync.Queue
@@ -2920,6 +3302,11 @@ $ConvertWorker = {
         W ("Werkmap: {0}" -f $st.WorkDir)
         W '============================================================'
 
+        # $pre       : kopie die vooruit wordt gehaald voor het VOLGENDE bestand
+        # $preHuidig : kopie die bij het bestand hoort dat nu wordt verwerkt
+        $pre       = $null
+        $preHuidig = $null
+
         while ($true) {
 
             Update-Timers
@@ -2938,6 +3325,7 @@ $ConvertWorker = {
             if ($job -eq $null) { break }        # wachtrij leeg: klaar
 
             $sync.CurrentJob = $job
+            $preHuidig       = $null
 
             # ---- voorbereiden ---------------------------------------
             $activeBefore        = $swActive.Elapsed.TotalSeconds
@@ -2956,8 +3344,57 @@ $ConvertWorker = {
             W ''
             W ("[{0}] {1}   (nog {2} in de wachtrij)" -f ($sync.JobsDone + 1), $job.FullPath, $sync.Queue.Count)
 
+            # ---- bron lokaal: klaarstaande kopie of nu ophalen -------
+            $readPath = [string]$job.FullPath
+
+            if ($pre -ne $null) {
+                if ($pre.Job -eq $job) {
+                    $klaar = Complete-Prefetch $pre
+                    if ($klaar) {
+                        $readPath = $klaar
+                        $preHuidig = $pre
+                        W ("Bron staat lokaal klaar: {0}" -f $readPath)
+                    }
+                    else { Stop-Prefetch $pre }
+                    $pre = $null
+                }
+                else {
+                    # de wachtrij is omgegooid: deze kopie hoort bij een
+                    # ander bestand en kan weg
+                    W 'De wachtrij is gewijzigd; de vooruit gehaalde kopie hoort niet bij dit bestand en wordt opgeruimd.' 'WAARS'
+                    Stop-Prefetch $pre
+                    $pre = $null
+                }
+            }
+
+            if ($preHuidig -eq $null) {
+                $eigen = Start-Prefetch $job
+                if ($eigen -ne $null) {
+                    $klaar = Complete-Prefetch $eigen
+                    if ($klaar) { $readPath = $klaar; $preHuidig = $eigen }
+                    else { Stop-Prefetch $eigen }
+                }
+            }
+
+            if ($sync.Cancel) {
+                Stop-Prefetch $preHuidig
+                $preHuidig = $null
+                $job.Status = 'Afgebroken'
+                $job.Queued = $false
+                $sync.CurrentJob = $null
+                break
+            }
+
+            # ---- alvast het volgende ophalen -------------------------
+            #  Dit loopt mee met de encode hieronder, dus er staat hooguit
+            #  een bestand vooruit klaar.
+            if ($pre -eq $null -and -not $sync.StopAfterCurrent) {
+                $volgende = Peek-NextJob
+                if ($volgende -ne $null) { $pre = Start-Prefetch $volgende }
+            }
+
             $origLastWrite = $null
-            try { $origLastWrite = (Get-Item -LiteralPath $job.FullPath).LastWriteTime } catch { }
+            try { $origLastWrite = (Get-Item -LiteralPath $readPath).LastWriteTime } catch { }
 
             $guid = [guid]::NewGuid().ToString('N')
             $temp = Join-Path $st.WorkDir ("x265_$guid.tmp.mkv")
@@ -2968,7 +3405,7 @@ $ConvertWorker = {
             # wordt; bij kopieren doet het niet mee.
             $audioCh = 2
             if (([string]$st.AudioMode) -ne 'copy') {
-                $audioCh = Get-AudioChannels $job.FullPath
+                $audioCh = Get-AudioChannels $readPath
                 W ("Geluid: {0}, bron heeft {1} kanaal(en)." -f ([string]$st.AudioMode), $audioCh)
             }
 
@@ -2983,7 +3420,7 @@ $ConvertWorker = {
             $srcKnown = $false
             if ($st.CheckAudioTail) {
                 $sync.CurPhase = 'Bron nakijken'
-                $sTail = Test-AudioTail -FilePath $job.FullPath -ToleranceSec ([double]$st.AudioTailTolerance)
+                $sTail = Test-AudioTail -FilePath $readPath -ToleranceSec ([double]$st.AudioTailTolerance)
                 if ($sTail.Checked) {
                     $srcShort = [double]$sTail.ShortSec
                     $srcKnown = $true
@@ -2994,7 +3431,7 @@ $ConvertWorker = {
             }
 
             # sporen uitzoeken: wat kan er mee naar mkv, en hoe
-            $plan = Get-StreamPlan $job.FullPath
+            $plan = Get-StreamPlan $readPath
             if ($plan.Ok) {
                 foreach ($n in $plan.Notes) { W ("Sporen: {0}" -f $n) 'WAARS' }
             }
@@ -3027,7 +3464,7 @@ $ConvertWorker = {
                     $sync.CurPhasePct = 0
                 }
 
-                $res = Invoke-Encode -SourcePath $job.FullPath -TempPath $temp `
+                $res = Invoke-Encode -SourcePath $readPath -TempPath $temp `
                                      -ProgressPath $prog `
                                      -EncodeArgs (Get-EncodeArgs -Variant $variant -Channels $audioCh -Plan $plan)
 
@@ -3292,7 +3729,7 @@ $ConvertWorker = {
                     $newLen = [long]0
                     try { $newLen = (Get-Item -LiteralPath $temp).Length } catch { }
 
-                    $outPath = New-OutputPath $job.FullPath
+                    $outPath = New-OutputPath -SourcePath $job.FullPath -Fixed ([string]$job.OutPath)
 
                     $sync.CurPhase    = 'Verplaatsen'
                     $sync.CurPhasePct = 0
@@ -3382,6 +3819,14 @@ $ConvertWorker = {
                 }
             }
 
+            # ---- lokale kopie opruimen ------------------------------
+            #  Ongeacht de afloop. Een achtergebleven kopie van een paar GB
+            #  is erger dan een kopie die opnieuw moet.
+            if ($preHuidig -ne $null) {
+                Stop-Prefetch $preHuidig
+                $preHuidig = $null
+            }
+
             # ---- afronden per bestand -------------------------------
             if ($jobDone) {
                 $sync.JobsDone = $sync.JobsDone + 1
@@ -3404,6 +3849,14 @@ $ConvertWorker = {
         }
 
         Update-Timers
+
+        # Kopieen die nog klaarstonden of halverwege waren: weg ermee. De
+        # lus kan op tien plekken zijn uitgestapt, dus dit hoort hier en
+        # niet bij een van die uitgangen.
+        Stop-Prefetch $preHuidig
+        Stop-Prefetch $pre
+        $preHuidig = $null
+        $pre       = $null
 
         # ---- eindrapport --------------------------------------------
         $savedTotal = $sync.OrigBytes - $sync.NewBytes
@@ -3435,6 +3888,12 @@ $ConvertWorker = {
         W ($_.ScriptStackTrace) 'FOUT'
     }
     finally {
+        # Laatste vangnet voor de lokale kopieen: als er hierboven iets
+        # onverwachts is misgegaan, mag er nog steeds niets van een paar GB
+        # in de werkmap achterblijven.
+        try { Stop-Prefetch $preHuidig } catch { }
+        try { Stop-Prefetch $pre }       catch { }
+
         $swWall.Stop(); $swActive.Stop()
         $sync.CurrentJob  = $null
         $sync.CurFile     = ''
@@ -3643,6 +4102,8 @@ function Save-Settings {
             SubExtensions = @($script:SubExtensions)
             MaxFailStreak = [int]$script:MaxFailStreak
             KeepAwakeSignal = [string]$script:KeepAwakeSignal
+            PrefetchToWorkDir   = [bool]$script:PrefetchToWorkDir
+            PrefetchOnlyNetwork = [bool]$script:PrefetchOnlyNetwork
             FinalRemux         = [bool]$script:FinalRemux
             RemuxIfNeeded      = [bool]$script:RemuxIfNeeded
             CheckAudioTail     = [bool]$script:CheckAudioTail
@@ -3903,6 +4364,8 @@ if ($saved -ne $null) {
         }
         if ($saved.FinalRemux -ne $null)    { $script:FinalRemux    = [bool]$saved.FinalRemux }
         if ($saved.RemuxIfNeeded -ne $null) { $script:RemuxIfNeeded = [bool]$saved.RemuxIfNeeded }
+        if ($saved.PrefetchToWorkDir -ne $null)   { $script:PrefetchToWorkDir   = [bool]$saved.PrefetchToWorkDir }
+        if ($saved.PrefetchOnlyNetwork -ne $null) { $script:PrefetchOnlyNetwork = [bool]$saved.PrefetchOnlyNetwork }
         if ($saved.RestoreQueue -ne $null) { $script:RestoreQueue = [bool]$saved.RestoreQueue }
         if ($saved.CheckAudioTail -ne $null) { $script:CheckAudioTail = [bool]$saved.CheckAudioTail }
         if ($saved.AudioTailTolerance -ne $null) {
@@ -4259,7 +4722,7 @@ function Sync-QueueOrder {
         if ($j -eq $null) { continue }
         $i++
         $j.QueuePos  = $i
-        $j.QueueText = ('{0:000}' -f $i)
+        $j.QueueText = ('{0:0000}' -f $i)
         $secs = $secs + [double]$j.DurationSec
     }
     $sync.QueueVideoSec = $secs
@@ -4566,17 +5029,37 @@ $ui.btnCleanTemp.Add_Click({
         [System.Windows.MessageBox]::Show("Werkmap bestaat niet of is niet toegankelijk:`n$wd", 'Werkmap', 'OK', 'Warning') | Out-Null
         return
     }
-    $old = @(Get-ChildItem -LiteralPath $wd -File -Filter 'x265_*' -ErrorAction SilentlyContinue)
-    if ($old.Count -eq 0) { Set-Status 'Geen achtergebleven tijdelijke bestanden gevonden.'; return }
-    $sz = ($old | Measure-Object -Property Length -Sum).Sum
+    # Losse bestanden EN de x265_pre_*-mappen waarin een bron lokaal is
+    # gezet. Die laatste zijn zo groot als het bronbestand, dus juist die
+    # wil je hier zien.
+    $old  = @(Get-ChildItem -LiteralPath $wd -File -Filter 'x265_*' -ErrorAction SilentlyContinue)
+    $mapn = @(Get-ChildItem -LiteralPath $wd -Directory -Filter 'x265_pre_*' -ErrorAction SilentlyContinue)
+
+    $sz = 0
+    if ($old.Count -gt 0) { $sz = ($old | Measure-Object -Property Length -Sum).Sum }
+    foreach ($m in $mapn) {
+        try { $sz += (Get-ChildItem -LiteralPath $m.FullName -File -Recurse -ErrorAction SilentlyContinue |
+                      Measure-Object -Property Length -Sum).Sum } catch { }
+    }
+
+    if ($old.Count -eq 0 -and $mapn.Count -eq 0) {
+        Set-Status 'Geen achtergebleven tijdelijke bestanden gevonden.'
+        return
+    }
+
+    $wat = @()
+    if ($old.Count  -gt 0) { $wat += ("{0} bestand(en)" -f $old.Count) }
+    if ($mapn.Count -gt 0) { $wat += ("{0} map(pen) met een lokale kopie" -f $mapn.Count) }
+
     $a = [System.Windows.MessageBox]::Show(
-        ("$($old.Count) achtergebleven bestand(en) gevonden ({0}).`n`nVerwijderen?" -f (Format-Size $sz)),
+        ("Achtergebleven: {0} ({1}).`n`nVerwijderen?" -f ($wat -join ' en '), (Format-Size $sz)),
         'Werkmap opruimen', 'YesNo', 'Question')
     if ($a -eq 'Yes') {
         $n = 0
-        foreach ($f in $old) { try { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop; $n++ } catch { } }
-        Set-Status "$n bestand(en) opgeruimd."
-        Write-Log "$n achtergebleven tijdelijke bestand(en) verwijderd uit $wd"
+        foreach ($f in $old)  { try { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop; $n++ } catch { } }
+        foreach ($m in $mapn) { try { Remove-Item -LiteralPath $m.FullName -Recurse -Force -ErrorAction Stop; $n++ } catch { } }
+        Set-Status "$n item(s) opgeruimd."
+        Write-Log "$n achtergebleven item(s) verwijderd uit $wd"
     }
 })
 
@@ -4697,6 +5180,55 @@ $ui.btnSaveLog.Add_Click({
 
 # ---- instellingen uitlezen ------------------------------------------
 
+# Start de conversie als die nog niet loopt. Gebruikt voor opdrachten van
+# de opdrachtregel: die horen gewoon te gaan draaien, zonder dat er eerst
+# op Start hoeft te worden geklikt. Loopt er al een conversie, dan staat
+# het bestand nu in de wachtrij en pakt de worker het vanzelf op.
+function Start-ConversionIfIdle {
+
+    if ($sync.ConvBusy) { return }
+    if ($sync.Queue.Count -lt 1) { return }
+
+    $st = Get-ConvertSettings
+
+    if (-not (Test-DirWritable $st.WorkDir)) {
+        $terug = Join-Path $env:TEMP 'X265-Converter'
+        if (Test-DirWritable $terug) {
+            Write-Log ("Werkmap {0} is niet bruikbaar; uitgeweken naar {1}." -f $st.WorkDir, $terug) 'WAARS'
+            $ui.txtWork.Text = $terug
+            $st.WorkDir      = $terug
+        }
+        else {
+            Write-Log ("Werkmap {0} is niet bruikbaar en er is geen alternatief; opdracht blijft in de wachtrij staan." -f $st.WorkDir) 'FOUT'
+            return
+        }
+    }
+
+    if (-not (Resolve-Ffmpeg)) {
+        Write-Log 'ffmpeg ontbreekt; de opdracht blijft in de wachtrij staan.' 'FOUT'
+        return
+    }
+
+    $script:KeepAwakeStopped = $false
+
+    $sync.Settings         = $st
+    $sync.Cancel           = $false
+    $sync.StopAfterCurrent = $false
+    $sync.PauseRequested   = $false
+    $sync.IsPaused         = $false
+    $sync.FailStreak       = 0
+    $sync.EmergencyStop    = $false
+
+    $dump = ''
+    while ($sync.EmergencyFiles.TryDequeue([ref]$dump)) { }
+
+    $script:ExitPending = $false
+
+    Write-Log 'Conversie gestart vanuit een opdracht op de opdrachtregel.'
+    Start-Worker $ConvertWorker 'conv'
+    Update-Buttons
+}
+
 function Get-ScanSettings {
     return @{
         Folders    = @($ui.lstFolders.Items | ForEach-Object { [string]$_ })
@@ -4722,6 +5254,8 @@ function Get-ConvertSettings {
         SubExtensions  = @($script:SubExtensions)
         MaxFailStreak  = [int]$script:MaxFailStreak
         AppStamp       = [string]$AppStamp
+        PrefetchToWorkDir   = [bool]$script:PrefetchToWorkDir
+        PrefetchOnlyNetwork = [bool]$script:PrefetchOnlyNetwork
         FinalRemux         = [bool]$script:FinalRemux
         RemuxIfNeeded      = [bool]$script:RemuxIfNeeded
         CheckAudioTail     = [bool]$script:CheckAudioTail
@@ -5065,6 +5599,8 @@ function Invoke-Tick {
     # ---------- nieuwe scanresultaten onderaan de lijst -------------
     $added = 0
     $item  = $null
+    $autoQueue = New-Object System.Collections.ArrayList
+
     while ($added -lt 300 -and $sync.NewJobs.TryDequeue([ref]$item)) {
 
         $full = [string]$item.FullPath
@@ -5083,6 +5619,7 @@ function Invoke-Tick {
         $fj.SizeText     = Format-Size ([double]$item.SizeBytes)
         $fj.DurationText = if ($item.DurationSec -gt 0) { Format-Clock ([double]$item.DurationSec) } else { '?' }
         $fj.Queued       = $false
+        if ($item.PSObject.Properties.Name -contains 'OutPath') { $fj.OutPath = [string]$item.OutPath }
         if ($fj.IsHevc) { $fj.Status = 'Al HEVC' } else { $fj.Status = 'Niet in wachtrij' }
         if (-not $fj.IsHevc) { $fj.Include = [bool]$item.Include }
 
@@ -5090,8 +5627,23 @@ function Invoke-Tick {
         $jobs.Add($fj)
         Register-JobEvents $fj
         $added++
+
+        # Van de opdrachtregel aangeleverd: meteen achteraan de wachtrij,
+        # anders zou er nog op een klik op Start moeten worden gewacht.
+        if ($item.PSObject.Properties.Name -contains 'AutoQueue' -and [bool]$item.AutoQueue) {
+            [void]$autoQueue.Add($fj)
+        }
+    }
+    if ($autoQueue.Count -gt 0) {
+        [void](Add-ToQueueBack $autoQueue)
+        Write-Log ("{0} bestand(en) van de opdrachtregel achteraan de wachtrij gezet." -f $autoQueue.Count)
+        Start-ConversionIfIdle
     }
     if ($added -gt 0) { Request-Save }
+
+    # ---------- opdrachten van een tweede aanroep -------------------
+    # Read-Inbox houdt zichzelf op een ronde per twee seconden.
+    Read-Inbox
 
     # ---------- uitkomsten van de controleronde ---------------------
     $verified = 0
@@ -5157,7 +5709,11 @@ function Invoke-Tick {
 
     # ---------- scanvoortgang ---------------------------------------
     if ($scanBusy) {
-        $wat = if ($sync.ScanMode -eq 'verify') { 'Controleren' } else { 'Scannen' }
+        $wat = switch ($sync.ScanMode) {
+            'verify'   { 'Controleren' }
+            'opdracht' { 'Opdrachten nakijken' }
+            default    { 'Scannen' }
+        }
         if ($sync.ScanTotal -gt 0) {
             $ui.txtScanState.Text = ("{0}: {1}/{2}  -  video's {3}  -  al HEVC {4}  -  onbruikbaar {5}" -f `
                 $wat, $sync.ScanChecked, $sync.ScanTotal, $sync.ScanFound, $sync.ScanSkippedHevc, $sync.ScanSkippedNoVid)
@@ -5350,7 +5906,8 @@ function Invoke-Tick {
     $slotScan = $script:Slots['scan']
     if ($slotScan.Handle -ne $null -and $slotScan.Handle.IsCompleted) {
 
-        $wasVerify = ($sync.ScanMode -eq 'verify')
+        $wasVerify   = ($sync.ScanMode -eq 'verify')
+        $wasOpdracht = ($sync.ScanMode -eq 'opdracht')
 
         $sync.ScanBusy = $false
         $scanBusy      = $false
@@ -5378,6 +5935,13 @@ function Invoke-Tick {
                 [System.Windows.MessageBox]::Show($m, 'Bewaarde lijst', 'OK', 'Information') | Out-Null
             }
             Set-Title 'Batch Converter'
+        }
+        elseif ($wasOpdracht) {
+            # Opdrachten van de opdrachtregel: geen schermvullende melding en
+            # vooral niet de weergave van een lopende conversie leegmaken.
+            $sync.ScanMode = 'scan'
+            Write-Log ("Opdrachten verwerkt: {0} aangenomen, {1} al HEVC, {2} niet bruikbaar." -f `
+                $sync.ScanFound, $sync.ScanSkippedHevc, $sync.ScanSkippedNoVid)
         }
         else {
             $txt = ("Scan gereed. {0} video's gevonden, {1} al HEVC, {2} zonder videostream." -f `
@@ -5536,6 +6100,67 @@ $timer.Add_Tick({
 # 17.  Vensterafhandeling
 # ---------------------------------------------------------------------
 
+# ---------------------------------------------------------------------
+#  Postbus: opdrachten van een tweede aanroep
+#
+#  Een tweede aanroep met -In/-Out schrijft een klein json-bestandje in
+#  de map 'opdrachten' en sluit zichzelf af. Hier wordt die map om de twee
+#  seconden bekeken. Niet elke tik: dat zou 150 keer per minuut een
+#  mapuitlezing zijn voor iets wat zelden gebeurt.
+#
+#  Het probewerk (duur, codec, grootte) gebeurt in de scan-worker en niet
+#  hier, want een bestand op een trage share mag het venster niet ophouden.
+# ---------------------------------------------------------------------
+$script:InboxLaatst = [DateTime]::MinValue
+
+function Read-Inbox {
+
+    if ((Get-Date) - $script:InboxLaatst -lt [TimeSpan]::FromSeconds(2)) { return }
+    $script:InboxLaatst = Get-Date
+
+    if (-not (Test-PathSafe $InboxDir -Container)) { return }
+
+    $bestanden = @()
+    try { $bestanden = @(Get-ChildItem -LiteralPath $InboxDir -File -Filter 'opdracht_*.json' -ErrorAction SilentlyContinue) }
+    catch { return }
+    if ($bestanden.Count -lt 1) { return }
+
+    # De scan-worker kan maar een ding tegelijk. Is die bezig, dan blijven
+    # de opdrachten gewoon liggen tot de volgende ronde.
+    if ($sync.ScanBusy) { return }
+
+    $opdrachten = New-Object System.Collections.ArrayList
+    foreach ($b in $bestanden) {
+        try {
+            $j = (Get-Content -Raw -LiteralPath $b.FullName -ErrorAction Stop) | ConvertFrom-Json
+            if ($j -and $j.In) {
+                [void]$opdrachten.Add([pscustomobject]@{ In = [string]$j.In; Out = [string]$j.Out })
+                Write-Log ("Opdracht ontvangen: {0}{1}" -f $j.In, $(if ($j.Out) { " -> $($j.Out)" } else { '' }))
+            }
+        }
+        catch { Write-Log ("Onleesbare opdracht {0}: {1}" -f $b.Name, $_.Exception.Message) 'WAARS' }
+
+        # Ook een onleesbare opdracht weghalen, anders blijft hij elke
+        # ronde opnieuw langskomen.
+        try { Remove-Item -LiteralPath $b.FullName -Force -ErrorAction Stop } catch { }
+    }
+
+    if ($opdrachten.Count -lt 1) { return }
+
+    $sync.ScanMode        = 'opdracht'
+    $sync.ScanSettings    = @{ Jobs = @($opdrachten.ToArray()) }
+    $sync.ScanCancel      = $false
+    $sync.ScanTotal       = $opdrachten.Count
+    $sync.ScanChecked     = 0
+    $sync.ScanFound       = 0
+    $sync.ScanSkippedHevc = 0
+    $sync.ScanSkippedVcp  = 0
+    $sync.ScanSkippedNoVid= 0
+    $sync.ScanStatus      = 'Opdrachten verwerken…'
+    Start-Worker $ScanWorker 'scan'
+    Update-Buttons
+}
+
 $win.Add_Loaded({
 
     Set-Title 'Batch Converter'
@@ -5590,6 +6215,16 @@ $win.Add_Loaded({
         if ($script:SavedSettings -and $script:SavedSettings.Queue) { $bewaard = @($script:SavedSettings.Queue).Count }
         if ($bewaard -gt 0) {
             Write-Log ("De lijst begint leeg. Er stonden nog {0} regel(s) van de vorige keer in het instellingenbestand; die worden bij de eerstvolgende keer opslaan weggeschreven als lege lijst. Zet RestoreQueue op true om de wachtrij wel te bewaren." -f $bewaard)
+        }
+    }
+
+    # Zelf met -In gestart: die opdracht gaat door dezelfde postbus als een
+    # tweede aanroep. Zo is er maar een weg naar binnen, en die is getest.
+    if (-not [string]::IsNullOrWhiteSpace($In)) {
+        if (Write-Opdracht -InPad $In -UitPad $Out) {
+            Write-Log ("Opdracht van de opdrachtregel: {0}{1}" -f $In, $(if ($Out) { " -> $Out" } else { '' }))
+        } else {
+            Write-Log ("De opdracht van de opdrachtregel kon niet worden opgeslagen: {0}" -f $In) 'WAARS'
         }
     }
 
@@ -5668,3 +6303,15 @@ if ($script:SavedSettings -ne $null -and $script:SavedSettings.Window -ne $null)
 [void]$win.ShowDialog()
 
 Clear-AllSlots
+
+# De eenmaal-tegelijk-grendel loslaten. Gebeurt dit niet, dan blijft de
+# grendel tot het proces echt weg is vasthangen; bij een self-exit die
+# nog even nawerkt zou een volgende aanroep zich dan onterecht als
+# tweede instantie gedragen.
+try {
+    if ($script:AppMutex -ne $null) {
+        if ($script:IsPrimair) { try { $script:AppMutex.ReleaseMutex() } catch { } }
+        $script:AppMutex.Dispose()
+        $script:AppMutex = $null
+    }
+} catch { }

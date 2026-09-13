@@ -66,6 +66,79 @@ if (-not (Test-DirWritable $DataDir)) {
     }
 }
 
+# ---------------------------------------------------------------------
+#  Eén instantie, en een postbus voor opdrachten
+#
+#  Wordt het script nog een keer aangeroepen terwijl het al draait - met
+#  -In/-Out vanuit een ander programma, of gewoon door nog eens te
+#  dubbelklikken - dan hoort er geen tweede venster te komen. De nieuwe
+#  opdracht gaat naar de postbus van de draaiende instantie en die zet hem
+#  achteraan de wachtrij.
+#
+#  Een named mutex is hier het juiste gereedschap: hij verdwijnt vanzelf
+#  als het proces stopt, ook bij een crash. Een lock-bestand zou na een
+#  harde afsluiting blijven staan en het programma onstartbaar maken.
+#  'Local\' en niet 'Global\': per aangemelde gebruiker is genoeg, en
+#  Global vraagt rechten die op een beheerde machine ontbreken.
+# ---------------------------------------------------------------------
+$InboxDir  = Join-Path $DataDir 'opdrachten'
+$MutexNaam = 'Local\X265Converter.SingleInstance'
+
+$script:AppMutex  = $null
+$script:IsPrimair = $true
+try {
+    $nieuw = $false
+    $script:AppMutex  = New-Object System.Threading.Mutex($true, $MutexNaam, [ref]$nieuw)
+    $script:IsPrimair = $nieuw
+}
+catch {
+    # Bij twijfel gewoon starten: een programma dat niet opstart is erger
+    # dan twee vensters.
+    $script:IsPrimair = $true
+}
+
+function Write-Opdracht {
+    param([string]$InPad, [string]$UitPad)
+
+    try {
+        if (-not (Test-Path -LiteralPath $InboxDir)) {
+            New-Item -ItemType Directory -Path $InboxDir -Force -ErrorAction Stop | Out-Null
+        }
+        $naam = 'opdracht_' + (Get-Date -Format 'yyyyMMdd_HHmmss_fff') + '_' +
+                ([guid]::NewGuid().ToString('N').Substring(0,8)) + '.json'
+        $pad  = Join-Path $InboxDir $naam
+
+        # eerst als .tmp wegschrijven en dan hernoemen, anders kan de
+        # andere instantie een half geschreven bestand oppakken
+        $tmp = $pad + '.tmp'
+        ([pscustomobject]@{
+            In   = $InPad
+            Out  = $UitPad
+            Tijd = (Get-Date).ToString('s')
+        } | ConvertTo-Json) | Set-Content -LiteralPath $tmp -Encoding UTF8 -Force
+        Move-Item -LiteralPath $tmp -Destination $pad -Force
+        return $true
+    }
+    catch {
+        Write-Host ("Kon de opdracht niet doorgeven: {0}" -f $_.Exception.Message)
+        return $false
+    }
+}
+
+# Draait er al een instantie? Dan opdracht doorgeven en klaar.
+if (-not $script:IsPrimair) {
+    if (-not [string]::IsNullOrWhiteSpace($In)) {
+        if (Write-Opdracht -InPad $In -UitPad $Out) {
+            Write-Host ("X265 Converter draait al; {0} is achteraan de wachtrij gezet." -f $In)
+        }
+    }
+    else {
+        Write-Host 'X265 Converter draait al.'
+    }
+    try { if ($script:AppMutex) { $script:AppMutex.Dispose() } } catch { }
+    return
+}
+
 $SettingsFile = Join-Path $DataDir 'X265-Converter.settings.json'
 $ErrorLogFile = Join-Path $DataDir 'X265-Converter.error.log'
 
@@ -99,6 +172,18 @@ $script:SmartRetry = $true   # herpoging met alleen beeld en geluid als het misg
 # signaal gaat af voordat het programma zichzelf eventueel afsluit.
 # Leeg maken zet het uit.
 $script:KeepAwakeSignal = 'KeepAwakeStopSignal'
+
+# Bron eerst naar de werkmap kopieren voordat er wordt geencodeerd.
+# ffmpeg leest een bestand niet in een ruk maar de hele encode lang; staat
+# de bron op een share, dan is dat een half uur netwerkverkeer en
+# schijfactiviteit op de andere machine. Eenmaal overhalen is rustiger.
+# Het kopieren van het volgende bestand loopt mee met de huidige encode,
+# dus er staat hooguit een bestand vooruit klaar.
+$script:PrefetchToWorkDir  = $true
+
+# Alleen doen voor bronnen op een netwerkpad. Een lokale bron kopieren
+# levert niets op en kost alleen schijfruimte.
+$script:PrefetchOnlyNetwork = $true
 
 # Wachtrij bewaren over een herstart heen. Staat UIT: bij het opstarten
 # begint de lijst leeg, zodat een nieuwe scan niet bij de resten van de

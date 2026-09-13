@@ -9,6 +9,12 @@ rem  er dus niets meer open.
 rem
 rem  Je kunt ook een map op dit bestand slepen; die wordt meteen als
 rem  bronmap toegevoegd.
+rem
+rem  Vanuit een ander script of programma:
+rem      X265-Converter.cmd -In "D:\in\film.mkv" -Out "E:\uit\film.mkv"
+rem  -Out is optioneel; zonder -Out wordt <naam>.x265.mkv naast de bron
+rem  gezet. Draait er al een instantie, dan gaat het bestand daar
+rem  achteraan de wachtrij en komt er geen tweede venster.
 rem ===================================================================
 
 setlocal EnableExtensions EnableDelayedExpansion
@@ -33,7 +39,24 @@ set "SCRIPT=!SCRIPT:'=''!"
 
 set "PSCMD=& '!SCRIPT!' -FromLauncher"
 
-if not "%~1"=="" (
+rem Aanroep vanuit een ander programma: -In <pad> [-Out <pad>]
+if /i "%~1"=="-In" (
+    if "%~2"=="" (
+        echo.
+        echo FOUT: -In is opgegeven zonder pad.
+        echo Gebruik: %~nx0 -In "D:\in\film.mkv" [-Out "E:\uit\film.mkv"]
+        echo.
+        exit /b 1
+    )
+    set "INFILE=%~2"
+    set "INFILE=!INFILE:'=''!"
+    set "PSCMD=& '!SCRIPT!' -FromLauncher -In '!INFILE!'"
+    if /i "%~3"=="-Out" (
+        set "OUTFILE=%~4"
+        set "OUTFILE=!OUTFILE:'=''!"
+        set "PSCMD=& '!SCRIPT!' -FromLauncher -In '!INFILE!' -Out '!OUTFILE!'"
+    )
+) else if not "%~1"=="" (
     set "DROP=%~1"
     set "DROP=!DROP:'=''!"
     set "PSCMD=& '!SCRIPT!' -FromLauncher -Path '!DROP!'"

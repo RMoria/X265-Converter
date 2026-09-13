@@ -29,7 +29,20 @@ param(
     # Wordt door X265-Converter.cmd meegegeven. Betekent: dit proces
     # heeft een consolevenster geërfd, dus meteen opnieuw starten als
     # proces ZONDER console en deze instantie afsluiten.
-    [switch]$FromLauncher
+    [switch]$FromLauncher,
+
+    # Aanroep vanuit een ander script of programma: één bestand omzetten.
+    # -In is het volledige pad van de bron.
+    [string]$In,
+
+    # Het volledige pad van het resultaat. Dit wordt LETTERLIJK gebruikt:
+    # er wordt geen '.x265' achter geplakt en er komt geen '(2)' bij als
+    # het al bestaat. Wie het pad zelf opgeeft, krijgt precies dat pad.
+    # Weggelaten? Dan gaat het resultaat als <naam>.x265.mkv naast de bron.
+    #
+    # Draait er al een instantie, dan wordt de opdracht daaraan doorgegeven
+    # (achteraan de wachtrij) en sluit deze aanroep zichzelf meteen af.
+    [string]$Out
 )
 
 # ---------------------------------------------------------------------
@@ -44,8 +57,8 @@ param(
 #  LEESMIJ-X265-Converter.md.
 # ---------------------------------------------------------------------
 $AppName    = 'X265 Converter'
-$AppVersion = '1.1'
-$AppDate    = '2026-09-12'
+$AppVersion = '1.2'
+$AppDate    = '2026-09-13'
 $AppTitle   = 'Video naar H.265 / HEVC'
 $AppStamp   = ('{0} {1} ({2})' -f $AppName, $AppVersion, $AppDate)
 
@@ -67,13 +80,23 @@ $AppStamp   = ('{0} {1} ({2})' -f $AppName, $AppVersion, $AppDate)
 # ---------------------------------------------------------------------
 
 function Get-RelaunchArguments {
-    param([string]$ScriptPath, [string[]]$Folders)
+    param([string]$ScriptPath, [string[]]$Folders, [string]$InFile = '', [string]$OutFile = '')
 
     $cmd = "& '" + ($ScriptPath -replace "'", "''") + "'"
     if ($Folders) {
         $q = @()
         foreach ($f in $Folders) { $q += ("'" + ($f -replace "'", "''") + "'") }
         if ($q.Count -gt 0) { $cmd = $cmd + ' -Path ' + ($q -join ',') }
+    }
+
+    # -In en -Out moeten mee naar de instantie die blijft leven, anders
+    # gaat de opdracht van een aanroepend programma verloren op het moment
+    # dat het script zichzelf zonder console herstart.
+    if (-not [string]::IsNullOrWhiteSpace($InFile)) {
+        $cmd = $cmd + " -In '" + ($InFile -replace "'", "''") + "'"
+        if (-not [string]::IsNullOrWhiteSpace($OutFile)) {
+            $cmd = $cmd + " -Out '" + ($OutFile -replace "'", "''") + "'"
+        }
     }
     return ('-NoProfile -ExecutionPolicy Bypass -STA -Command "' + $cmd + '"')
 }
@@ -93,7 +116,7 @@ if ($FromLauncher) {
     # -Path geeft dan "parameter specified more than once". Daarom -Command
     # met PowerShell-notatie, waarin enkele aanhalingstekens verdubbeld
     # worden.
-    $argLine = Get-RelaunchArguments -ScriptPath $self -Folders $Path
+    $argLine = Get-RelaunchArguments -ScriptPath $self -Folders $Path -InFile $In -OutFile $Out
 
     $relaunched = $false
     try {
@@ -133,7 +156,7 @@ if ([Threading.Thread]::CurrentThread.GetApartmentState() -ne [Threading.Apartme
     $hostExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     if (-not (Test-Path -LiteralPath $hostExe)) { $hostExe = 'powershell.exe' }
 
-    $argLine = Get-RelaunchArguments -ScriptPath $self -Folders $Path
+    $argLine = Get-RelaunchArguments -ScriptPath $self -Folders $Path -InFile $In -OutFile $Out
 
     try {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -527,6 +550,10 @@ namespace X265
         public int    QueuePos   { get; set; }
         public double EncodeSec  { get; set; }
         public string RawCodec   { get; set; }
+
+        // Vast uitvoerpad, meegegeven met -Out op de opdrachtregel. Leeg
+        // betekent: zelf een naam afleiden (<naam>.x265.mkv).
+        public string OutPath    { get; set; }
     }
 }
 '@

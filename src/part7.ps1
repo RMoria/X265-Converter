@@ -214,7 +214,7 @@ function Sync-QueueOrder {
         if ($j -eq $null) { continue }
         $i++
         $j.QueuePos  = $i
-        $j.QueueText = ('{0:000}' -f $i)
+        $j.QueueText = ('{0:0000}' -f $i)
         $secs = $secs + [double]$j.DurationSec
     }
     $sync.QueueVideoSec = $secs
@@ -521,17 +521,37 @@ $ui.btnCleanTemp.Add_Click({
         [System.Windows.MessageBox]::Show("Werkmap bestaat niet of is niet toegankelijk:`n$wd", 'Werkmap', 'OK', 'Warning') | Out-Null
         return
     }
-    $old = @(Get-ChildItem -LiteralPath $wd -File -Filter 'x265_*' -ErrorAction SilentlyContinue)
-    if ($old.Count -eq 0) { Set-Status 'Geen achtergebleven tijdelijke bestanden gevonden.'; return }
-    $sz = ($old | Measure-Object -Property Length -Sum).Sum
+    # Losse bestanden EN de x265_pre_*-mappen waarin een bron lokaal is
+    # gezet. Die laatste zijn zo groot als het bronbestand, dus juist die
+    # wil je hier zien.
+    $old  = @(Get-ChildItem -LiteralPath $wd -File -Filter 'x265_*' -ErrorAction SilentlyContinue)
+    $mapn = @(Get-ChildItem -LiteralPath $wd -Directory -Filter 'x265_pre_*' -ErrorAction SilentlyContinue)
+
+    $sz = 0
+    if ($old.Count -gt 0) { $sz = ($old | Measure-Object -Property Length -Sum).Sum }
+    foreach ($m in $mapn) {
+        try { $sz += (Get-ChildItem -LiteralPath $m.FullName -File -Recurse -ErrorAction SilentlyContinue |
+                      Measure-Object -Property Length -Sum).Sum } catch { }
+    }
+
+    if ($old.Count -eq 0 -and $mapn.Count -eq 0) {
+        Set-Status 'Geen achtergebleven tijdelijke bestanden gevonden.'
+        return
+    }
+
+    $wat = @()
+    if ($old.Count  -gt 0) { $wat += ("{0} bestand(en)" -f $old.Count) }
+    if ($mapn.Count -gt 0) { $wat += ("{0} map(pen) met een lokale kopie" -f $mapn.Count) }
+
     $a = [System.Windows.MessageBox]::Show(
-        ("$($old.Count) achtergebleven bestand(en) gevonden ({0}).`n`nVerwijderen?" -f (Format-Size $sz)),
+        ("Achtergebleven: {0} ({1}).`n`nVerwijderen?" -f ($wat -join ' en '), (Format-Size $sz)),
         'Werkmap opruimen', 'YesNo', 'Question')
     if ($a -eq 'Yes') {
         $n = 0
-        foreach ($f in $old) { try { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop; $n++ } catch { } }
-        Set-Status "$n bestand(en) opgeruimd."
-        Write-Log "$n achtergebleven tijdelijke bestand(en) verwijderd uit $wd"
+        foreach ($f in $old)  { try { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop; $n++ } catch { } }
+        foreach ($m in $mapn) { try { Remove-Item -LiteralPath $m.FullName -Recurse -Force -ErrorAction Stop; $n++ } catch { } }
+        Set-Status "$n item(s) opgeruimd."
+        Write-Log "$n achtergebleven item(s) verwijderd uit $wd"
     }
 })
 
@@ -652,6 +672,55 @@ $ui.btnSaveLog.Add_Click({
 
 # ---- instellingen uitlezen ------------------------------------------
 
+# Start de conversie als die nog niet loopt. Gebruikt voor opdrachten van
+# de opdrachtregel: die horen gewoon te gaan draaien, zonder dat er eerst
+# op Start hoeft te worden geklikt. Loopt er al een conversie, dan staat
+# het bestand nu in de wachtrij en pakt de worker het vanzelf op.
+function Start-ConversionIfIdle {
+
+    if ($sync.ConvBusy) { return }
+    if ($sync.Queue.Count -lt 1) { return }
+
+    $st = Get-ConvertSettings
+
+    if (-not (Test-DirWritable $st.WorkDir)) {
+        $terug = Join-Path $env:TEMP 'X265-Converter'
+        if (Test-DirWritable $terug) {
+            Write-Log ("Werkmap {0} is niet bruikbaar; uitgeweken naar {1}." -f $st.WorkDir, $terug) 'WAARS'
+            $ui.txtWork.Text = $terug
+            $st.WorkDir      = $terug
+        }
+        else {
+            Write-Log ("Werkmap {0} is niet bruikbaar en er is geen alternatief; opdracht blijft in de wachtrij staan." -f $st.WorkDir) 'FOUT'
+            return
+        }
+    }
+
+    if (-not (Resolve-Ffmpeg)) {
+        Write-Log 'ffmpeg ontbreekt; de opdracht blijft in de wachtrij staan.' 'FOUT'
+        return
+    }
+
+    $script:KeepAwakeStopped = $false
+
+    $sync.Settings         = $st
+    $sync.Cancel           = $false
+    $sync.StopAfterCurrent = $false
+    $sync.PauseRequested   = $false
+    $sync.IsPaused         = $false
+    $sync.FailStreak       = 0
+    $sync.EmergencyStop    = $false
+
+    $dump = ''
+    while ($sync.EmergencyFiles.TryDequeue([ref]$dump)) { }
+
+    $script:ExitPending = $false
+
+    Write-Log 'Conversie gestart vanuit een opdracht op de opdrachtregel.'
+    Start-Worker $ConvertWorker 'conv'
+    Update-Buttons
+}
+
 function Get-ScanSettings {
     return @{
         Folders    = @($ui.lstFolders.Items | ForEach-Object { [string]$_ })
@@ -677,6 +746,8 @@ function Get-ConvertSettings {
         SubExtensions  = @($script:SubExtensions)
         MaxFailStreak  = [int]$script:MaxFailStreak
         AppStamp       = [string]$AppStamp
+        PrefetchToWorkDir   = [bool]$script:PrefetchToWorkDir
+        PrefetchOnlyNetwork = [bool]$script:PrefetchOnlyNetwork
         FinalRemux         = [bool]$script:FinalRemux
         RemuxIfNeeded      = [bool]$script:RemuxIfNeeded
         CheckAudioTail     = [bool]$script:CheckAudioTail

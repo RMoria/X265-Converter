@@ -3,7 +3,7 @@
 Video naar H.265 / HEVC omzetten op Windows, met een grafische interface.
 Eén PowerShell-script plus een starter; verder alleen ffmpeg.
 
-**Versie 1.1** — [wat er per versie is veranderd](LEESMIJ-X265-Converter.md#wat-er-per-versie-is-veranderd)
+**Versie 1.2** — [wat er per versie is veranderd](LEESMIJ-X265-Converter.md#wat-er-per-versie-is-veranderd)
 
 ![PowerShell 5.1](https://img.shields.io/badge/PowerShell-5.1-blue)
 ![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-blue)
@@ -32,6 +32,10 @@ is gaan zitten:
 - **Sporen worden vooraf uitgezocht.** Timecode- en datastromen kan MKV
   niet opslaan, mov_text-ondertitels moeten naar srt, en een
   omslagafbeelding hoeft niet door de encoder.
+- **Een bron op een netwerklocatie wordt eerst lokaal gezet.** ffmpeg leest
+  tijdens het encoderen heen en weer door het bestand; zonder die kopie
+  staat er urenlang verkeer op de share. Er wordt er één tegelijk vooruit
+  gehaald, overlappend met de lopende encode.
 - **Geen beheerdersrechten nodig**, ook niet op een dichtgezette machine.
 
 ## Installeren
@@ -42,6 +46,17 @@ is gaan zitten:
    `ffmpeg.exe` en `ffprobe.exe` in `ffmpeg\bin\` naast het script.
    Staat ffmpeg in je `PATH`, dan werkt dat ook.
 3. Dubbelklik **`X265-Converter.cmd`**.
+
+Vanuit een ander script of programma kan er ook één bestand worden
+aangeboden:
+
+```
+X265-Converter.cmd -In "D:\in\film.mkv" -Out "E:\uit\film.mkv"
+```
+
+`-Out` wordt letterlijk gebruikt — geen `.x265` erachter en geen `(2)`
+erbij. Draait er al een instantie, dan komt het bestand daar achteraan de
+wachtrij in plaats van in een tweede venster.
 
 Getest met ffmpeg 9.0.1 en Windows PowerShell 5.1.
 

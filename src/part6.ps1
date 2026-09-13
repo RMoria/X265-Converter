@@ -197,6 +197,8 @@ function Save-Settings {
             SubExtensions = @($script:SubExtensions)
             MaxFailStreak = [int]$script:MaxFailStreak
             KeepAwakeSignal = [string]$script:KeepAwakeSignal
+            PrefetchToWorkDir   = [bool]$script:PrefetchToWorkDir
+            PrefetchOnlyNetwork = [bool]$script:PrefetchOnlyNetwork
             FinalRemux         = [bool]$script:FinalRemux
             RemuxIfNeeded      = [bool]$script:RemuxIfNeeded
             CheckAudioTail     = [bool]$script:CheckAudioTail
@@ -457,6 +459,8 @@ if ($saved -ne $null) {
         }
         if ($saved.FinalRemux -ne $null)    { $script:FinalRemux    = [bool]$saved.FinalRemux }
         if ($saved.RemuxIfNeeded -ne $null) { $script:RemuxIfNeeded = [bool]$saved.RemuxIfNeeded }
+        if ($saved.PrefetchToWorkDir -ne $null)   { $script:PrefetchToWorkDir   = [bool]$saved.PrefetchToWorkDir }
+        if ($saved.PrefetchOnlyNetwork -ne $null) { $script:PrefetchOnlyNetwork = [bool]$saved.PrefetchOnlyNetwork }
         if ($saved.RestoreQueue -ne $null) { $script:RestoreQueue = [bool]$saved.RestoreQueue }
         if ($saved.CheckAudioTail -ne $null) { $script:CheckAudioTail = [bool]$saved.CheckAudioTail }
         if ($saved.AudioTailTolerance -ne $null) {

@@ -104,5 +104,9 @@ namespace X265
         public int    QueuePos   { get; set; }
         public double EncodeSec  { get; set; }
         public string RawCodec   { get; set; }
+
+        // Vast uitvoerpad, meegegeven met -Out op de opdrachtregel. Leeg
+        // betekent: zelf een naam afleiden (<naam>.x265.mkv).
+        public string OutPath    { get; set; }
     }
 }

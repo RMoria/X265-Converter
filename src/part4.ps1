@@ -72,6 +72,75 @@ $ScanWorker = {
     }
 
     # =================================================================
+    #  MODUS 'opdracht' : losse bestanden die via -In/-Out zijn
+    #                     aangeleverd, elk met een vast uitvoerpad
+    #
+    #  Het probewerk gebeurt hier en niet op de UI-draad: een bestand op
+    #  een share dat niet reageert kost seconden, en daar mag het venster
+    #  niet op vastlopen.
+    # =================================================================
+    if ($sync.ScanMode -eq 'opdracht') {
+        try {
+            $opdrachten = @($sync.ScanSettings.Jobs)
+            $sync.ScanTotal = $opdrachten.Count
+            W ("{0} opdracht(en) van de opdrachtregel verwerken." -f $opdrachten.Count)
+
+            foreach ($opd in $opdrachten) {
+
+                if ($sync.ScanCancel) { break }
+
+                $sync.ScanChecked = $sync.ScanChecked + 1
+                $inPad  = [string]$opd.In
+                $uitPad = [string]$opd.Out
+                $sync.ScanStatus = "Opdracht $($sync.ScanChecked)/$($sync.ScanTotal): $([IO.Path]::GetFileName($inPad))"
+
+                $fi = $null
+                try { $fi = Get-Item -LiteralPath $inPad -ErrorAction Stop } catch { }
+                if ($fi -eq $null) {
+                    W ("Opdracht overgeslagen, bestand niet gevonden: {0}" -f $inPad) 'FOUT'
+                    continue
+                }
+
+                $info = Probe-File $fi.FullName
+                if ($info -eq $null) {
+                    W ("Opdracht overgeslagen, geen leesbare video: {0}" -f $inPad) 'FOUT'
+                    continue
+                }
+
+                $isHevc = ($info.Codec -match '(?i)^(hevc|h265|x265)$')
+                if ($isHevc) {
+                    W ("Opdracht overgeslagen, is al HEVC: {0}" -f $inPad) 'WAARS'
+                    $sync.ScanSkippedHevc = $sync.ScanSkippedHevc + 1
+                    continue
+                }
+
+                $sync.ScanFound = $sync.ScanFound + 1
+                $sync.NewJobs.Enqueue([pscustomobject]@{
+                    FullPath    = $fi.FullName
+                    Name        = $fi.Name
+                    Folder      = $fi.DirectoryName
+                    SizeBytes   = [long]$fi.Length
+                    DurationSec = [double]$info.DurationSec
+                    Codec       = $info.Codec
+                    IsHevc      = $false
+                    Include     = $true
+                    OutPath     = $uitPad
+                    AutoQueue   = $true
+                })
+                W ("Opdracht toegevoegd: {0}{1}" -f $fi.FullName,
+                    $(if ($uitPad) { " -> $uitPad" } else { '' }))
+            }
+        }
+        catch {
+            W ("Fout bij het verwerken van opdrachten: {0}" -f $_.Exception.Message) 'FOUT'
+        }
+        finally {
+            $sync.ScanBusy = $false
+        }
+        return
+    }
+
+    # =================================================================
     #  MODUS 'verify' : alleen de opgegeven paden nalopen
     #
     #  Wordt bij het opstarten gebruikt voor een bewaarde wachtrij:

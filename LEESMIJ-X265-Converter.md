@@ -1,8 +1,8 @@
 # Video naar H.265 / HEVC — PowerShell GUI
 
-**Versie 1.1 (12 september 2026)**
+**Versie 1.2 (13 september 2026)**
 
-Het versienummer staat achter in de venstertitel (`… [v1.1]`), als eerste regel
+Het versienummer staat achter in de venstertitel (`… [v1.2]`), als eerste regel
 in de log bij het opstarten, bovenaan `X265-Converter.error.log` en als `Version`
 in het instellingenbestand. Bij een melding is dat het eerste wat je wilt weten.
 Bijwerken gaat met `$AppVersion` en `$AppDate` bovenaan het script: tweede cijfer
@@ -11,6 +11,21 @@ erbij voor nieuw gedrag, derde cijfer voor een reparatie.
 Opvolger van `convert.bat`. Eén PowerShell-script met een grafische interface.
 
 ## Wat er per versie is veranderd
+
+### 1.2 — 13 september 2026
+
+- **Een bron op een netwerklocatie wordt eerst naar de werkmap gekopieerd.**
+  ffmpeg leest een bestand tijdens het encoderen niet één keer netjes van voor
+  naar achter, dus zonder die kopie staat er urenlang verkeer op de share en
+  blijft de schijf aan de andere kant draaien. Er wordt er steeds maar één
+  vooruit gehaald, en die kopie begint al terwijl het vorige bestand nog aan het
+  encoderen is. Zie *De bron eerst lokaal zetten*.
+- **Het script is nu vanaf de opdrachtregel te gebruiken**, met `-In` en `-Out`,
+  zodat een ander script of programma er werk aan kan geven. Draait er al een
+  instantie, dan komt het bestand daar achteraan de wachtrij in plaats van dat
+  er een tweede venster opent. Zie *Aanroepen vanuit een ander programma*.
+- **Het wachtrijnummer telt in vier cijfers** (`0001`, `0002`, …), zodat de
+  kolom niet meer verspringt zodra je boven de negen of de negenennegentig komt.
 
 ### 1.1 — 12 september 2026
 
@@ -67,6 +82,93 @@ de instantie die het venster bezet sluit zich direct daarna af.
 > dat blijft leven helemaal geen console meer aangemaakt — `CreateNoWindow` op
 > een verse `ProcessStartInfo`. Er is dus geen venster meer om te verbergen.
 
+## Aanroepen vanuit een ander programma
+
+Eén bestand aanbieden gaat met `-In` en, optioneel, `-Out`:
+
+```
+X265-Converter.cmd -In "D:\in\film.mkv" -Out "E:\uit\film.mkv"
+```
+
+Of rechtstreeks op het script:
+
+```
+powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File "C:\Tools\2-265\X265-Converter.ps1" -In "D:\in\film.mkv" -Out "E:\uit\film.mkv"
+```
+
+**`-Out` wordt letterlijk gebruikt.** Er komt geen `.x265` achter en geen `(2)`
+erbij als het pad al bestaat — wie het pad zelf opgeeft krijgt precies dat pad,
+bestaande naam of niet. Ontbreekt de map, dan wordt die aangemaakt. Laat je
+`-Out` weg, dan gedraagt het zich als altijd: `<naam>.x265.mkv` naast de bron.
+
+**Draait er al een instantie, dan komt er geen tweede venster.** Het bestand
+gaat achteraan de wachtrij van het venster dat al openstaat, en de aanroep is
+meteen klaar — hij wacht dus niet tot de conversie gedaan is. Roep je tien keer
+achter elkaar aan, dan staan er tien regels in de wachtrij en wordt er één
+tegelijk verwerkt. Staat er niets in de wachtrij, dan begint de conversie
+vanzelf; je hoeft niet op **Start** te klikken.
+
+> **Hoe dat werkt.** Een named mutex (`Local\X265Converter.SingleInstance`)
+> bepaalt wie de eerste is. De tweede aanroep schrijft een klein json-bestandje
+> in `opdrachten\` naast de instellingen en sluit zichzelf af; de draaiende
+> instantie kijkt die map elke twee seconden na. Bewust een mutex en geen
+> lock-bestand: een mutex verdwijnt vanzelf als het proces stopt, ook bij een
+> crash. Een lock-bestand zou na een harde afsluiting blijven staan en het
+> programma onstartbaar maken.
+>
+> Het json-bestandje wordt eerst als `.tmp` weggeschreven en daarna hernoemd,
+> zodat de andere instantie nooit een half geschreven opdracht oppakt. Ook een
+> onleesbare opdracht wordt weggegooid — anders komt hij elke ronde opnieuw
+> langs.
+
+Wat er wordt overgeslagen, met een regel in de log: een bestand dat niet bestaat
+of niet leesbaar is, een bestand zonder bruikbare videostream, en een bestand dat
+al HEVC is. Het uitzoekwerk (`ffprobe`) gebeurt in de achtergrondthread, zodat
+een trage share het venster niet laat vastlopen.
+
+Kan de mutex niet worden aangemaakt — dat kan op een streng dichtgezette machine
+— dan start het programma gewoon als eerste instantie. Twee vensters is minder
+erg dan een programma dat niet opstart.
+
+## De bron eerst lokaal zetten
+
+Staat de bron op een netwerklocatie, dan wordt het bestand eerst naar de werkmap
+gekopieerd en leest `ffmpeg` van die kopie.
+
+Dat is niet voor de snelheid. `ffmpeg` leest een bestand tijdens het encoderen
+niet één keer netjes van voor naar achter: het springt heen en weer en leest
+stukken opnieuw. Bij een bestand van een paar GB betekent dat urenlang verkeer
+over de share en een schijf die aan de andere kant blijft draaien. Eén keer
+doorkopiëren is aan beide kanten rustiger.
+
+- **Eén tegelijk vooruit.** Niet de hele wachtrij, alleen het eerstvolgende
+  bestand. De werkmap loopt dus nooit vol met kopieën.
+- **Overlappend.** De kopie van het volgende bestand begint al terwijl het
+  vorige nog aan het encoderen is, zodat de encoder er niet op hoeft te wachten.
+- **Opruimen gebeurt in alle gevallen.** Geslaagd, mislukt, afgebroken of
+  afsluiten: de map `x265_pre_<id>` gaat weg. Wordt de wachtrij onderweg
+  veranderd, zodat het vooruit gehaalde bestand niet meer aan de beurt is, dan
+  wordt die kopie weggegooid en meldt de log dat.
+- **Ruimtecontrole vooraf.** Is er minder vrij dan twee keer het bestand plus
+  2 GB, dan wordt er niet gekopieerd en leest `ffmpeg` gewoon van de share.
+  Datzelfde gebeurt als de kopie halverwege misgaat of de grootte niet klopt.
+
+Twee instellingen sturen dit (in `X265-Converter.settings.json`):
+
+| Sleutel | Standaard | Betekenis |
+| --- | --- | --- |
+| `PrefetchToWorkDir` | `true` | Bron eerst naar de werkmap kopiëren |
+| `PrefetchOnlyNetwork` | `true` | Alleen doen bij een UNC-pad of een netwerkschijf |
+
+Zet `PrefetchOnlyNetwork` op `false` als je ook een langzame lokale schijf of een
+USB-disk zo wilt behandelen. Zet `PrefetchToWorkDir` op `false` om het helemaal
+uit te zetten.
+
+Tijdens het kopiëren staat er **Bron lokaal zetten** bij de voortgang, met het
+percentage. Onder aan de rit blijft er niets van de kopie staan; **Werkmap
+opruimen** in het instellingenpaneel veegt ook eventuele `x265_pre_`-mappen weg
+die van een harde afsluiting zijn overgebleven.
+
 ## Wat er gebeurt
 
 1. **Scannen** — de bronmappen worden doorlopen (recursief als dat aanstaat).
@@ -88,7 +190,7 @@ het resultaat wordt `<naam>.x265.mkv`. Bestaat die naam al, dan komt er `(2)`,
 
 De wachtrij is het hart van het programma en tegelijk de lijst die je ziet:
 regels die in de wachtrij staan staan bovenaan, in de volgorde waarin ze gedaan
-worden, met hun **positie in drie cijfers** (`001`, `017`) in de kolom `Nr`.
+worden, met hun **positie in vier cijfers** (`0001`, `0017`) in de kolom `Nr`.
 
 - **De encoder pakt altijd de bovenste.** Er is geen vaste index: de werk-thread
   haalt de bovenste regel van de lijst en werkt die af. Daardoor kun je de rest
@@ -688,6 +790,15 @@ kopiëren, container MKV**. Aanpasbaar:
 stonden: submappen meenemen, de wijzigingsdatum van het origineel overnemen, en
 de slimme herpoging. Ze staan nog wel als `Recursive`, `KeepDate` en `SmartRetry`
 in het instellingenbestand, dus met de hand aanpassen kan.
+
+**Alleen in het instellingenbestand**, zonder vinkje in het venster:
+
+| Sleutel | Standaard | Betekenis |
+| --- | --- | --- |
+| `PrefetchToWorkDir` | `true` | Bron eerst naar de werkmap kopiëren |
+| `PrefetchOnlyNetwork` | `true` | Alleen bij een UNC-pad of netwerkschijf |
+| `RestoreQueue` | `false` | Wachtrij bewaren over een herstart heen |
+| `Recursive`, `KeepDate`, `SmartRetry` | `true` | Zie hierboven |
 
 **Al HEVC overslaan is vast gedrag** — daar is geen vinkje meer voor. Zulke
 bestanden komen na een scan wel in de lijst met status `Al HEVC`, zodat je ziet

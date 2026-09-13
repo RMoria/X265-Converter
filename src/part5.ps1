@@ -83,7 +83,22 @@ $ConvertWorker = {
     }
 
     function New-OutputPath {
-        param([string]$SourcePath)
+        param([string]$SourcePath, [string]$Fixed = '')
+
+        # Is er met -Out een naam meegegeven, dan is dat de naam. Geen
+        # '.x265' erachter, geen '(2)' erbij: wie het pad zelf opgeeft
+        # verwacht precies dat pad. Wel de map aanmaken als die ontbreekt.
+        if (-not [string]::IsNullOrWhiteSpace($Fixed)) {
+            try {
+                $od = [IO.Path]::GetDirectoryName($Fixed)
+                if ($od -and -not (Test-Path -LiteralPath $od)) {
+                    New-Item -ItemType Directory -Path $od -Force -ErrorAction Stop | Out-Null
+                }
+            }
+            catch { W ("Uitvoermap kon niet worden gemaakt: {0}" -f $_.Exception.Message) 'WAARS' }
+            return $Fixed
+        }
+
         $dir   = [IO.Path]::GetDirectoryName($SourcePath)
         $base  = Get-CleanBase ([IO.Path]::GetFileNameWithoutExtension($SourcePath))
         $cand  = Join-Path $dir ($base + '.x265.mkv')
@@ -995,6 +1010,178 @@ $ConvertWorker = {
     }
 
     # -----------------------------------------------------------------
+    #  Bron eerst lokaal zetten
+    #
+    #  Waarom: ffmpeg leest een bestand niet in één ruk maar blijft er de
+    #  hele encode lang uit lezen. Staat de bron op een share, dan levert
+    #  dat een half uur lang netwerkverkeer en schijfactiviteit op de
+    #  andere machine op. Eén keer in zijn geheel overhalen is voor beide
+    #  kanten rustiger, en de encode leest daarna van een lokale schijf.
+    #
+    #  Het kopieren van het VOLGENDE bestand loopt mee terwijl het huidige
+    #  wordt geencodeerd; er staat dus hooguit één bestand vooruit klaar,
+    #  niet de hele wachtrij. Daarvoor is robocopy handig: die draait als
+    #  eigen proces, dus de lus blijft ondertussen gewoon lopen.
+    #
+    #  Opruimen is hier belangrijker dan snelheid. Een achtergebleven kopie
+    #  van een paar GB is erger dan een kopie die opnieuw moet, dus elke
+    #  uitgang - geslaagd, mislukt, afgebroken, afsluiten - ruimt op.
+    # -----------------------------------------------------------------
+    function Test-NetworkPath {
+        param([string]$Path)
+
+        if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+        if ($Path.StartsWith('\\')) { return $true }      # UNC
+
+        # Toegewezen netwerkschijf (letter die naar een share wijst)
+        try {
+            $root = [IO.Path]::GetPathRoot($Path)
+            if ([string]::IsNullOrWhiteSpace($root)) { return $false }
+            $d = New-Object System.IO.DriveInfo $root
+            return ($d.DriveType -eq [System.IO.DriveType]::Network)
+        }
+        catch { return $false }
+    }
+
+    function Start-Prefetch {
+        param($Job)
+
+        if ($Job -eq $null) { return $null }
+        if (-not $st.PrefetchToWorkDir) { return $null }
+        if ($st.PrefetchOnlyNetwork -and -not (Test-NetworkPath $Job.FullPath)) { return $null }
+
+        $bron = [string]$Job.FullPath
+        $naam = [IO.Path]::GetFileName($bron)
+        if ([string]::IsNullOrWhiteSpace($naam)) { return $null }
+
+        # Past het? Er komt straks ook een encode-uitvoer in dezelfde map,
+        # dus vragen om het dubbele plus wat lucht.
+        try {
+            $nodig = [double]$Job.SizeBytes * 2 + 2GB
+            $vrij  = -1
+            try {
+                $di = New-Object System.IO.DriveInfo ([IO.Path]::GetPathRoot($st.WorkDir))
+                if ($di.IsReady) { $vrij = [double]$di.AvailableFreeSpace }
+            } catch { }
+            if ($vrij -ge 0 -and $vrij -lt $nodig) {
+                W ("Te weinig ruimte in de werkmap om {0} eerst lokaal te zetten; er wordt rechtstreeks gelezen." -f $naam) 'WAARS'
+                return $null
+            }
+        }
+        catch { }
+
+        $dir = Join-Path $st.WorkDir ("x265_pre_" + [guid]::NewGuid().ToString('N'))
+        try { New-Item -ItemType Directory -Path $dir -Force -ErrorAction Stop | Out-Null }
+        catch { W ("Kon geen map voor de lokale kopie maken: {0}" -f $_.Exception.Message) 'WAARS'; return $null }
+
+        $doel = Join-Path $dir $naam
+
+        # CopyToAsync doet het kopieerwerk op de threadpool, dus de lus
+        # hieronder blijft gewoon draaien en de encode van het vorige
+        # bestand loopt ondertussen door. Geen apart proces nodig, en de
+        # positie van de doelstream geeft meteen de voortgang.
+        $res = [pscustomobject]@{
+            Job = $Job; Task = $null; In = $null; Out = $null
+            Dir = $dir; Target = $doel; Bytes = [long]$Job.SizeBytes
+        }
+
+        try {
+            $res.In  = [System.IO.File]::Open($bron, [System.IO.FileMode]::Open,
+                                              [System.IO.FileAccess]::Read,
+                                              [System.IO.FileShare]::ReadWrite)
+            $res.Out = [System.IO.File]::Create($doel)
+            $res.Task = $res.In.CopyToAsync($res.Out, 1048576)
+        }
+        catch {
+            try { if ($res.Out) { $res.Out.Dispose() } } catch { }
+            try { if ($res.In)  { $res.In.Dispose() } }  catch { }
+            Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+            W ("Lokale kopie kon niet worden gestart: {0}" -f $_.Exception.Message) 'WAARS'
+            return $null
+        }
+
+        W ("Lokale kopie gestart: {0}" -f $naam)
+        return $res
+    }
+
+    function Stop-Prefetch {
+        param($Pre)
+
+        if ($Pre -eq $null) { return }
+
+        # De streams sluiten breekt een lopende kopie af.
+        try { if ($Pre.Out) { $Pre.Out.Dispose() } } catch { }
+        try { if ($Pre.In)  { $Pre.In.Dispose() } }  catch { }
+        $Pre.Out = $null
+        $Pre.In  = $null
+
+        if ($Pre.Dir) { Remove-Item -LiteralPath $Pre.Dir -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    # Wacht tot de kopie klaar is. Geeft het lokale pad terug, of een lege
+    # string als het niet gelukt is - dan wordt er van de bron gelezen,
+    # want dat werkte altijd al.
+    function Complete-Prefetch {
+        param($Pre)
+
+        if ($Pre -eq $null) { return '' }
+        if ($Pre.Task -eq $null) { Stop-Prefetch $Pre; return '' }
+
+        while (-not $Pre.Task.IsCompleted) {
+            if ($sync.Cancel) { Stop-Prefetch $Pre; return '' }
+            $sync.CurPhase = 'Bron lokaal zetten'
+            if ($Pre.Bytes -gt 0) {
+                try {
+                    $p = 100.0 * [double]$Pre.Out.Position / [double]$Pre.Bytes
+                    if ($p -gt 100) { $p = 100 }
+                    $sync.CurPhasePct = $p
+                } catch { }
+            }
+            Update-Timers
+            Start-Sleep -Milliseconds 250
+        }
+
+        $fout = ''
+        if ($Pre.Task.IsFaulted) {
+            $fout = 'onbekende fout'
+            try { $fout = $Pre.Task.Exception.GetBaseException().Message } catch { }
+        }
+        elseif ($Pre.Task.IsCanceled) { $fout = 'afgebroken' }
+
+        # eerst netjes afsluiten, anders staat niet alles op schijf
+        try { if ($Pre.Out) { $Pre.Out.Flush(); $Pre.Out.Dispose(); $Pre.Out = $null } } catch { }
+        try { if ($Pre.In)  { $Pre.In.Dispose();  $Pre.In  = $null } } catch { }
+
+        if ($fout) {
+            W ("Lokale kopie mislukt ({0}); er wordt rechtstreeks van de bron gelezen." -f $fout) 'WAARS'
+            Stop-Prefetch $Pre
+            return ''
+        }
+
+        if (-not (Test-Path -LiteralPath $Pre.Target)) {
+            W 'Lokale kopie is er niet; er wordt rechtstreeks van de bron gelezen.' 'WAARS'
+            Stop-Prefetch $Pre
+            return ''
+        }
+
+        # Even groot als de bron? Zo niet, dan is de kopie niet te
+        # vertrouwen en is rechtstreeks lezen beter dan een half bestand
+        # encoderen.
+        try {
+            $kopLen = (Get-Item -LiteralPath $Pre.Target).Length
+            if ($Pre.Bytes -gt 0 -and $kopLen -ne $Pre.Bytes) {
+                W ("Lokale kopie is {0} bytes en de bron {1}; kopie verworpen." -f $kopLen, $Pre.Bytes) 'WAARS'
+                Stop-Prefetch $Pre
+                return ''
+            }
+        }
+        catch { }
+
+        $sync.CurPhasePct = 0
+        return [string]$Pre.Target
+    }
+
+    # -----------------------------------------------------------------
     #  De wachtrij: altijd de bovenste pakken
     #
     #  Er is met opzet GEEN index. De bovenste regel wordt onder een lock
@@ -1003,6 +1190,20 @@ $ConvertWorker = {
     #  overgeslagen of dubbel gedaan. Het bestand dat onder handen is zit
     #  niet meer in de lijst maar in $sync.CurrentJob.
     # -----------------------------------------------------------------
+    # Kijken wat er bovenaan ligt zonder het eraf te halen. Nodig om
+    # alvast het volgende bestand te kunnen ophalen terwijl het huidige
+    # nog draait. Dat de gebruiker daarna de rij nog kan omgooien is geen
+    # probleem: bij het oppakken wordt gecontroleerd of de kopie ook echt
+    # bij dat bestand hoort.
+    function Peek-NextJob {
+        $top = $null
+        $q = $sync.Queue
+        [System.Threading.Monitor]::Enter($q.SyncRoot)
+        try { if ($q.Count -gt 0) { $top = $q[0] } }
+        finally { [System.Threading.Monitor]::Exit($q.SyncRoot) }
+        return $top
+    }
+
     function Get-NextJob {
         $taken = $null
         $q = $sync.Queue
@@ -1170,6 +1371,11 @@ $ConvertWorker = {
         W ("Werkmap: {0}" -f $st.WorkDir)
         W '============================================================'
 
+        # $pre       : kopie die vooruit wordt gehaald voor het VOLGENDE bestand
+        # $preHuidig : kopie die bij het bestand hoort dat nu wordt verwerkt
+        $pre       = $null
+        $preHuidig = $null
+
         while ($true) {
 
             Update-Timers
@@ -1188,6 +1394,7 @@ $ConvertWorker = {
             if ($job -eq $null) { break }        # wachtrij leeg: klaar
 
             $sync.CurrentJob = $job
+            $preHuidig       = $null
 
             # ---- voorbereiden ---------------------------------------
             $activeBefore        = $swActive.Elapsed.TotalSeconds
@@ -1206,8 +1413,57 @@ $ConvertWorker = {
             W ''
             W ("[{0}] {1}   (nog {2} in de wachtrij)" -f ($sync.JobsDone + 1), $job.FullPath, $sync.Queue.Count)
 
+            # ---- bron lokaal: klaarstaande kopie of nu ophalen -------
+            $readPath = [string]$job.FullPath
+
+            if ($pre -ne $null) {
+                if ($pre.Job -eq $job) {
+                    $klaar = Complete-Prefetch $pre
+                    if ($klaar) {
+                        $readPath = $klaar
+                        $preHuidig = $pre
+                        W ("Bron staat lokaal klaar: {0}" -f $readPath)
+                    }
+                    else { Stop-Prefetch $pre }
+                    $pre = $null
+                }
+                else {
+                    # de wachtrij is omgegooid: deze kopie hoort bij een
+                    # ander bestand en kan weg
+                    W 'De wachtrij is gewijzigd; de vooruit gehaalde kopie hoort niet bij dit bestand en wordt opgeruimd.' 'WAARS'
+                    Stop-Prefetch $pre
+                    $pre = $null
+                }
+            }
+
+            if ($preHuidig -eq $null) {
+                $eigen = Start-Prefetch $job
+                if ($eigen -ne $null) {
+                    $klaar = Complete-Prefetch $eigen
+                    if ($klaar) { $readPath = $klaar; $preHuidig = $eigen }
+                    else { Stop-Prefetch $eigen }
+                }
+            }
+
+            if ($sync.Cancel) {
+                Stop-Prefetch $preHuidig
+                $preHuidig = $null
+                $job.Status = 'Afgebroken'
+                $job.Queued = $false
+                $sync.CurrentJob = $null
+                break
+            }
+
+            # ---- alvast het volgende ophalen -------------------------
+            #  Dit loopt mee met de encode hieronder, dus er staat hooguit
+            #  een bestand vooruit klaar.
+            if ($pre -eq $null -and -not $sync.StopAfterCurrent) {
+                $volgende = Peek-NextJob
+                if ($volgende -ne $null) { $pre = Start-Prefetch $volgende }
+            }
+
             $origLastWrite = $null
-            try { $origLastWrite = (Get-Item -LiteralPath $job.FullPath).LastWriteTime } catch { }
+            try { $origLastWrite = (Get-Item -LiteralPath $readPath).LastWriteTime } catch { }
 
             $guid = [guid]::NewGuid().ToString('N')
             $temp = Join-Path $st.WorkDir ("x265_$guid.tmp.mkv")
@@ -1218,7 +1474,7 @@ $ConvertWorker = {
             # wordt; bij kopieren doet het niet mee.
             $audioCh = 2
             if (([string]$st.AudioMode) -ne 'copy') {
-                $audioCh = Get-AudioChannels $job.FullPath
+                $audioCh = Get-AudioChannels $readPath
                 W ("Geluid: {0}, bron heeft {1} kanaal(en)." -f ([string]$st.AudioMode), $audioCh)
             }
 
@@ -1233,7 +1489,7 @@ $ConvertWorker = {
             $srcKnown = $false
             if ($st.CheckAudioTail) {
                 $sync.CurPhase = 'Bron nakijken'
-                $sTail = Test-AudioTail -FilePath $job.FullPath -ToleranceSec ([double]$st.AudioTailTolerance)
+                $sTail = Test-AudioTail -FilePath $readPath -ToleranceSec ([double]$st.AudioTailTolerance)
                 if ($sTail.Checked) {
                     $srcShort = [double]$sTail.ShortSec
                     $srcKnown = $true
@@ -1244,7 +1500,7 @@ $ConvertWorker = {
             }
 
             # sporen uitzoeken: wat kan er mee naar mkv, en hoe
-            $plan = Get-StreamPlan $job.FullPath
+            $plan = Get-StreamPlan $readPath
             if ($plan.Ok) {
                 foreach ($n in $plan.Notes) { W ("Sporen: {0}" -f $n) 'WAARS' }
             }
@@ -1277,7 +1533,7 @@ $ConvertWorker = {
                     $sync.CurPhasePct = 0
                 }
 
-                $res = Invoke-Encode -SourcePath $job.FullPath -TempPath $temp `
+                $res = Invoke-Encode -SourcePath $readPath -TempPath $temp `
                                      -ProgressPath $prog `
                                      -EncodeArgs (Get-EncodeArgs -Variant $variant -Channels $audioCh -Plan $plan)
 
@@ -1542,7 +1798,7 @@ $ConvertWorker = {
                     $newLen = [long]0
                     try { $newLen = (Get-Item -LiteralPath $temp).Length } catch { }
 
-                    $outPath = New-OutputPath $job.FullPath
+                    $outPath = New-OutputPath -SourcePath $job.FullPath -Fixed ([string]$job.OutPath)
 
                     $sync.CurPhase    = 'Verplaatsen'
                     $sync.CurPhasePct = 0
@@ -1632,6 +1888,14 @@ $ConvertWorker = {
                 }
             }
 
+            # ---- lokale kopie opruimen ------------------------------
+            #  Ongeacht de afloop. Een achtergebleven kopie van een paar GB
+            #  is erger dan een kopie die opnieuw moet.
+            if ($preHuidig -ne $null) {
+                Stop-Prefetch $preHuidig
+                $preHuidig = $null
+            }
+
             # ---- afronden per bestand -------------------------------
             if ($jobDone) {
                 $sync.JobsDone = $sync.JobsDone + 1
@@ -1654,6 +1918,14 @@ $ConvertWorker = {
         }
 
         Update-Timers
+
+        # Kopieen die nog klaarstonden of halverwege waren: weg ermee. De
+        # lus kan op tien plekken zijn uitgestapt, dus dit hoort hier en
+        # niet bij een van die uitgangen.
+        Stop-Prefetch $preHuidig
+        Stop-Prefetch $pre
+        $preHuidig = $null
+        $pre       = $null
 
         # ---- eindrapport --------------------------------------------
         $savedTotal = $sync.OrigBytes - $sync.NewBytes
@@ -1685,6 +1957,12 @@ $ConvertWorker = {
         W ($_.ScriptStackTrace) 'FOUT'
     }
     finally {
+        # Laatste vangnet voor de lokale kopieen: als er hierboven iets
+        # onverwachts is misgegaan, mag er nog steeds niets van een paar GB
+        # in de werkmap achterblijven.
+        try { Stop-Prefetch $preHuidig } catch { }
+        try { Stop-Prefetch $pre }       catch { }
+
         $swWall.Stop(); $swActive.Stop()
         $sync.CurrentJob  = $null
         $sync.CurFile     = ''

@@ -71,6 +71,8 @@ function Invoke-Tick {
     # ---------- nieuwe scanresultaten onderaan de lijst -------------
     $added = 0
     $item  = $null
+    $autoQueue = New-Object System.Collections.ArrayList
+
     while ($added -lt 300 -and $sync.NewJobs.TryDequeue([ref]$item)) {
 
         $full = [string]$item.FullPath
@@ -89,6 +91,7 @@ function Invoke-Tick {
         $fj.SizeText     = Format-Size ([double]$item.SizeBytes)
         $fj.DurationText = if ($item.DurationSec -gt 0) { Format-Clock ([double]$item.DurationSec) } else { '?' }
         $fj.Queued       = $false
+        if ($item.PSObject.Properties.Name -contains 'OutPath') { $fj.OutPath = [string]$item.OutPath }
         if ($fj.IsHevc) { $fj.Status = 'Al HEVC' } else { $fj.Status = 'Niet in wachtrij' }
         if (-not $fj.IsHevc) { $fj.Include = [bool]$item.Include }
 
@@ -96,8 +99,23 @@ function Invoke-Tick {
         $jobs.Add($fj)
         Register-JobEvents $fj
         $added++
+
+        # Van de opdrachtregel aangeleverd: meteen achteraan de wachtrij,
+        # anders zou er nog op een klik op Start moeten worden gewacht.
+        if ($item.PSObject.Properties.Name -contains 'AutoQueue' -and [bool]$item.AutoQueue) {
+            [void]$autoQueue.Add($fj)
+        }
+    }
+    if ($autoQueue.Count -gt 0) {
+        [void](Add-ToQueueBack $autoQueue)
+        Write-Log ("{0} bestand(en) van de opdrachtregel achteraan de wachtrij gezet." -f $autoQueue.Count)
+        Start-ConversionIfIdle
     }
     if ($added -gt 0) { Request-Save }
+
+    # ---------- opdrachten van een tweede aanroep -------------------
+    # Read-Inbox houdt zichzelf op een ronde per twee seconden.
+    Read-Inbox
 
     # ---------- uitkomsten van de controleronde ---------------------
     $verified = 0
@@ -163,7 +181,11 @@ function Invoke-Tick {
 
     # ---------- scanvoortgang ---------------------------------------
     if ($scanBusy) {
-        $wat = if ($sync.ScanMode -eq 'verify') { 'Controleren' } else { 'Scannen' }
+        $wat = switch ($sync.ScanMode) {
+            'verify'   { 'Controleren' }
+            'opdracht' { 'Opdrachten nakijken' }
+            default    { 'Scannen' }
+        }
         if ($sync.ScanTotal -gt 0) {
             $ui.txtScanState.Text = ("{0}: {1}/{2}  -  video's {3}  -  al HEVC {4}  -  onbruikbaar {5}" -f `
                 $wat, $sync.ScanChecked, $sync.ScanTotal, $sync.ScanFound, $sync.ScanSkippedHevc, $sync.ScanSkippedNoVid)
@@ -356,7 +378,8 @@ function Invoke-Tick {
     $slotScan = $script:Slots['scan']
     if ($slotScan.Handle -ne $null -and $slotScan.Handle.IsCompleted) {
 
-        $wasVerify = ($sync.ScanMode -eq 'verify')
+        $wasVerify   = ($sync.ScanMode -eq 'verify')
+        $wasOpdracht = ($sync.ScanMode -eq 'opdracht')
 
         $sync.ScanBusy = $false
         $scanBusy      = $false
@@ -384,6 +407,13 @@ function Invoke-Tick {
                 [System.Windows.MessageBox]::Show($m, 'Bewaarde lijst', 'OK', 'Information') | Out-Null
             }
             Set-Title 'Batch Converter'
+        }
+        elseif ($wasOpdracht) {
+            # Opdrachten van de opdrachtregel: geen schermvullende melding en
+            # vooral niet de weergave van een lopende conversie leegmaken.
+            $sync.ScanMode = 'scan'
+            Write-Log ("Opdrachten verwerkt: {0} aangenomen, {1} al HEVC, {2} niet bruikbaar." -f `
+                $sync.ScanFound, $sync.ScanSkippedHevc, $sync.ScanSkippedNoVid)
         }
         else {
             $txt = ("Scan gereed. {0} video's gevonden, {1} al HEVC, {2} zonder videostream." -f `
@@ -542,6 +572,67 @@ $timer.Add_Tick({
 # 17.  Vensterafhandeling
 # ---------------------------------------------------------------------
 
+# ---------------------------------------------------------------------
+#  Postbus: opdrachten van een tweede aanroep
+#
+#  Een tweede aanroep met -In/-Out schrijft een klein json-bestandje in
+#  de map 'opdrachten' en sluit zichzelf af. Hier wordt die map om de twee
+#  seconden bekeken. Niet elke tik: dat zou 150 keer per minuut een
+#  mapuitlezing zijn voor iets wat zelden gebeurt.
+#
+#  Het probewerk (duur, codec, grootte) gebeurt in de scan-worker en niet
+#  hier, want een bestand op een trage share mag het venster niet ophouden.
+# ---------------------------------------------------------------------
+$script:InboxLaatst = [DateTime]::MinValue
+
+function Read-Inbox {
+
+    if ((Get-Date) - $script:InboxLaatst -lt [TimeSpan]::FromSeconds(2)) { return }
+    $script:InboxLaatst = Get-Date
+
+    if (-not (Test-PathSafe $InboxDir -Container)) { return }
+
+    $bestanden = @()
+    try { $bestanden = @(Get-ChildItem -LiteralPath $InboxDir -File -Filter 'opdracht_*.json' -ErrorAction SilentlyContinue) }
+    catch { return }
+    if ($bestanden.Count -lt 1) { return }
+
+    # De scan-worker kan maar een ding tegelijk. Is die bezig, dan blijven
+    # de opdrachten gewoon liggen tot de volgende ronde.
+    if ($sync.ScanBusy) { return }
+
+    $opdrachten = New-Object System.Collections.ArrayList
+    foreach ($b in $bestanden) {
+        try {
+            $j = (Get-Content -Raw -LiteralPath $b.FullName -ErrorAction Stop) | ConvertFrom-Json
+            if ($j -and $j.In) {
+                [void]$opdrachten.Add([pscustomobject]@{ In = [string]$j.In; Out = [string]$j.Out })
+                Write-Log ("Opdracht ontvangen: {0}{1}" -f $j.In, $(if ($j.Out) { " -> $($j.Out)" } else { '' }))
+            }
+        }
+        catch { Write-Log ("Onleesbare opdracht {0}: {1}" -f $b.Name, $_.Exception.Message) 'WAARS' }
+
+        # Ook een onleesbare opdracht weghalen, anders blijft hij elke
+        # ronde opnieuw langskomen.
+        try { Remove-Item -LiteralPath $b.FullName -Force -ErrorAction Stop } catch { }
+    }
+
+    if ($opdrachten.Count -lt 1) { return }
+
+    $sync.ScanMode        = 'opdracht'
+    $sync.ScanSettings    = @{ Jobs = @($opdrachten.ToArray()) }
+    $sync.ScanCancel      = $false
+    $sync.ScanTotal       = $opdrachten.Count
+    $sync.ScanChecked     = 0
+    $sync.ScanFound       = 0
+    $sync.ScanSkippedHevc = 0
+    $sync.ScanSkippedVcp  = 0
+    $sync.ScanSkippedNoVid= 0
+    $sync.ScanStatus      = 'Opdrachten verwerken…'
+    Start-Worker $ScanWorker 'scan'
+    Update-Buttons
+}
+
 $win.Add_Loaded({
 
     Set-Title 'Batch Converter'
@@ -596,6 +687,16 @@ $win.Add_Loaded({
         if ($script:SavedSettings -and $script:SavedSettings.Queue) { $bewaard = @($script:SavedSettings.Queue).Count }
         if ($bewaard -gt 0) {
             Write-Log ("De lijst begint leeg. Er stonden nog {0} regel(s) van de vorige keer in het instellingenbestand; die worden bij de eerstvolgende keer opslaan weggeschreven als lege lijst. Zet RestoreQueue op true om de wachtrij wel te bewaren." -f $bewaard)
+        }
+    }
+
+    # Zelf met -In gestart: die opdracht gaat door dezelfde postbus als een
+    # tweede aanroep. Zo is er maar een weg naar binnen, en die is getest.
+    if (-not [string]::IsNullOrWhiteSpace($In)) {
+        if (Write-Opdracht -InPad $In -UitPad $Out) {
+            Write-Log ("Opdracht van de opdrachtregel: {0}{1}" -f $In, $(if ($Out) { " -> $Out" } else { '' }))
+        } else {
+            Write-Log ("De opdracht van de opdrachtregel kon niet worden opgeslagen: {0}" -f $In) 'WAARS'
         }
     }
 
@@ -674,3 +775,15 @@ if ($script:SavedSettings -ne $null -and $script:SavedSettings.Window -ne $null)
 [void]$win.ShowDialog()
 
 Clear-AllSlots
+
+# De eenmaal-tegelijk-grendel loslaten. Gebeurt dit niet, dan blijft de
+# grendel tot het proces echt weg is vasthangen; bij een self-exit die
+# nog even nawerkt zou een volgende aanroep zich dan onterecht als
+# tweede instantie gedragen.
+try {
+    if ($script:AppMutex -ne $null) {
+        if ($script:IsPrimair) { try { $script:AppMutex.ReleaseMutex() } catch { } }
+        $script:AppMutex.Dispose()
+        $script:AppMutex = $null
+    }
+} catch { }
