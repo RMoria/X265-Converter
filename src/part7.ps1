@@ -727,6 +727,7 @@ function Get-ScanSettings {
         Extensions = @($ui.txtExt.Text -split '[,;\s]+' | Where-Object { $_.Trim().Length -gt 0 })
         Recursive  = [bool]$script:Recursive
         VcpMarker  = [string]$script:VcpMarker
+        LockStaleMinutes = [double]$script:LockStaleMinutes
     }
 }
 
@@ -748,6 +749,8 @@ function Get-ConvertSettings {
         AppStamp       = [string]$AppStamp
         PrefetchToWorkDir   = [bool]$script:PrefetchToWorkDir
         PrefetchOnlyNetwork = [bool]$script:PrefetchOnlyNetwork
+        SharedLocks         = [bool]$script:SharedLocks
+        LockStaleMinutes    = [double]$script:LockStaleMinutes
         FinalRemux         = [bool]$script:FinalRemux
         RemuxIfNeeded      = [bool]$script:RemuxIfNeeded
         CheckAudioTail     = [bool]$script:CheckAudioTail

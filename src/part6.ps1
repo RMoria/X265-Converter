@@ -199,6 +199,8 @@ function Save-Settings {
             KeepAwakeSignal = [string]$script:KeepAwakeSignal
             PrefetchToWorkDir   = [bool]$script:PrefetchToWorkDir
             PrefetchOnlyNetwork = [bool]$script:PrefetchOnlyNetwork
+            SharedLocks         = [bool]$script:SharedLocks
+            LockStaleMinutes    = [double]$script:LockStaleMinutes
             FinalRemux         = [bool]$script:FinalRemux
             RemuxIfNeeded      = [bool]$script:RemuxIfNeeded
             CheckAudioTail     = [bool]$script:CheckAudioTail
@@ -461,6 +463,13 @@ if ($saved -ne $null) {
         if ($saved.RemuxIfNeeded -ne $null) { $script:RemuxIfNeeded = [bool]$saved.RemuxIfNeeded }
         if ($saved.PrefetchToWorkDir -ne $null)   { $script:PrefetchToWorkDir   = [bool]$saved.PrefetchToWorkDir }
         if ($saved.PrefetchOnlyNetwork -ne $null) { $script:PrefetchOnlyNetwork = [bool]$saved.PrefetchOnlyNetwork }
+        if ($saved.SharedLocks -ne $null)         { $script:SharedLocks         = [bool]$saved.SharedLocks }
+        if ($saved.LockStaleMinutes) {
+            $m = [double]$saved.LockStaleMinutes
+            # Onder de twee minuten wordt het gevaarlijk: dan geldt een pc
+            # die even met een trage share worstelt al als verdwenen.
+            if ($m -ge 2.0 -and $m -le 1440.0) { $script:LockStaleMinutes = $m }
+        }
         if ($saved.RestoreQueue -ne $null) { $script:RestoreQueue = [bool]$saved.RestoreQueue }
         if ($saved.CheckAudioTail -ne $null) { $script:CheckAudioTail = [bool]$saved.CheckAudioTail }
         if ($saved.AudioTailTolerance -ne $null) {

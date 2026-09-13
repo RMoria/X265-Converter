@@ -1,8 +1,8 @@
 # Video naar H.265 / HEVC — PowerShell GUI
 
-**Versie 1.2 (13 september 2026)**
+**Versie 1.3 (14 september 2026)**
 
-Het versienummer staat achter in de venstertitel (`… [v1.2]`), als eerste regel
+Het versienummer staat achter in de venstertitel (`… [v1.3]`), als eerste regel
 in de log bij het opstarten, bovenaan `X265-Converter.error.log` en als `Version`
 in het instellingenbestand. Bij een melding is dat het eerste wat je wilt weten.
 Bijwerken gaat met `$AppVersion` en `$AppDate` bovenaan het script: tweede cijfer
@@ -11,6 +11,22 @@ erbij voor nieuw gedrag, derde cijfer voor een reparatie.
 Opvolger van `convert.bat`. Eén PowerShell-script met een grafische interface.
 
 ## Wat er per versie is veranderd
+
+### 1.3 — 14 september 2026
+
+- **Twee computers kunnen op dezelfde map werken** zonder elkaar in de weg te
+  zitten. Voordat er aan een bestand wordt begonnen legt de pc er een klein
+  lock-bestandje naast; de ander ziet dat en gaat door naar het volgende.
+  Zie *Twee computers op dezelfde map*.
+- **De bron wordt vlak voor het oppakken nog een keer nagekeken.** Is hij
+  inmiddels weg — omdat de andere pc hem net heeft omgezet — dan wordt de regel
+  overgeslagen in plaats van als fout geteld.
+- **Achtergebleven lock-bestanden worden bij het scannen opgeruimd**, zonder
+  extra ronde over de share.
+- **Vlak voor het wegschrijven wordt gecontroleerd of het lock nog van ons is.**
+  Was deze pc lang in slaapstand en heeft de ander het bestand overgenomen, dan
+  gaat het eigen resultaat de prullenbak in in plaats van over dat van de ander
+  heen.
 
 ### 1.2 — 13 september 2026
 
@@ -129,6 +145,119 @@ een trage share het venster niet laat vastlopen.
 Kan de mutex niet worden aangemaakt — dat kan op een streng dichtgezette machine
 — dan start het programma gewoon als eerste instantie. Twee vensters is minder
 erg dan een programma dat niet opstart.
+
+## Twee computers op dezelfde map
+
+Laat je twee pc's op dezelfde (net)werkmap los, dan moeten ze niet allebei aan
+hetzelfde bestand beginnen. Dat regelt het programma zelf: voordat er aan een
+bestand wordt begonnen komt er een klein tekstbestandje naast te staan.
+
+```
+One Piece\
+    aflevering 12.mkv
+    aflevering 12.mkv.x265lock      <- zolang die pc ermee bezig is
+```
+
+Je kunt het in Kladblok openen en zien wie ermee bezig is:
+
+```
+pc=ACERROB
+pid=12345
+gebruiker=rob
+bestand=aflevering 12.mkv
+laatst=2026-09-14T20:09:11Z
+versie=X265 Converter 1.3 (2026-09-14)
+```
+
+Komt de tweede pc bij dat bestand, dan ziet hij het lock, zet de regel op
+**Andere pc bezig** en gaat meteen door naar het volgende vrije bestand. Aan het
+eind van de rit wordt er nog **één keer** langs de overgeslagen bestanden
+gelopen — de andere pc kan inmiddels gestopt zijn. Blijft het dan nog bezet, dan
+laat hij het erbij; blijven wachten heeft geen zin, want een bestand dat de ander
+wél afmaakt komt niet meer terug (het origineel is dan weg).
+
+Er wordt ook vlak voor het oppakken nog gekeken of de bron er überhaupt nog is.
+De lijst is een momentopname van de scan, en op een gedeelde map kan die binnen
+een uur achterlopen.
+
+### Waarom geen gedeeld lijstje
+
+Het lijkt handiger om één `bezig.txt` in de map te leggen en daar regels aan toe
+te voegen. Dat is precies het onderdeel dat niet veilig is: twee pc's lezen dat
+lijstje, vullen het allebei aan en schrijven het allebei terug — en dan is een
+van de twee regels weg. Er zit een moment tussen lezen en schrijven waarin de
+ander ertussen kan komen, en over SMB is dat moment lang genoeg om het echt te
+laten misgaan.
+
+Een lock-bestand per video heeft dat gat niet. Het wordt aangemaakt met
+*"alleen als het nog niet bestaat"* (`FileMode::CreateNew`), en dat is aan de
+serverkant één handeling die of lukt of faalt. In de CIFS/SMB-specificatie staat
+het letterlijk: als er al een bestand met die naam is, *"the command MUST fail"*.
+
+Het lock staat naast de bron en niet in een centrale lijst, omdat dezelfde map
+op de ene pc `\\10.0.0.242\g\One Piece` heet en op de andere misschien
+`G:\One Piece` of gewoon `C:\g\One Piece`. Een centrale lijst op pad zou die
+drie als drie verschillende dingen zien.
+
+### Als er een pc uitvalt
+
+Blijft er een lock liggen van een pc die is afgesloten, gecrasht of van het
+netwerk is gevallen, dan komt het bestand vanzelf weer vrij. Er zijn twee sloten
+op de deur, en ze vullen elkaar aan:
+
+1. **Het lock-bestand blijft openstaan** zolang de conversie loopt. Op Windows
+   kan een andere pc het dan niet hernoemen of weggooien — ook niet als hij
+   denkt dat het lock oud is. Sluit de pc af of crasht hij, dan sluit Windows
+   dat bestand en is het slot weg.
+2. **De eigenaar werkt zijn lock elke minuut bij.** Blijft dat een kwartier uit,
+   dan geldt het lock als verweesd en mag een ander het overnemen.
+
+> **Het kwartier is geen maximum voor de conversie.** Het is hoe lang een pc
+> *stil* mag zijn. Een trage pc die acht uur over een groot bestand doet houdt
+> zijn lock die hele acht uur vast, want hij laat elke minuut van zich horen —
+> ook tijdens het encoderen, het remuxen, het opvullen, het kopiëren van en naar
+> de share, en tijdens een pauze. Die hartslag zit daarom op één plek
+> (`Update-Timers`) waar al die lussen langskomen, en niet in elke lus apart:
+> zo kan er geen lus zijn die hem vergeet.
+
+### Als het lock toch wordt afgepakt
+
+Blijft een pc écht een kwartier stil — slaapstand, netwerk weg — dan neemt de
+ander het bestand over. Wordt de eerste pc daarna wakker en maakt hij zijn
+conversie af, dan zou hij zijn resultaat over dat van de ander heen zetten.
+
+Dat gebeurt niet. Vlak voordat het omgezette bestand naar de bronmap gaat wordt
+gecontroleerd of het lock nog van ons is. Is dat niet zo, dan wordt het eigen
+resultaat **weggegooid** en blijft het origineel ongemoeid — de ander is er
+immers al mee bezig of al klaar. De regel krijgt status **Lock kwijt** en telt
+niet mee voor de noodstop: er is niets mis met het bestand.
+
+Is het lock-bestand alleen maar *verdwenen* zonder dat iemand het heeft
+overgenomen — een hik van de share, een opruimactie — dan wordt het gewoon
+opnieuw geplaatst en loopt de conversie door. Er wordt geen uren rekenwerk
+weggegooid op grond van een twijfelgeval.
+
+Het overnemen zelf gebeurt met een **hernoeming** en niet met een verwijdering.
+Hernoemen kan maar één keer slagen, dus twee pc's die tegelijk tot de conclusie
+komen dat een lock oud is kunnen niet allebei doorlopen — en ze kunnen elkaars
+zojuist aangemaakte verse lock ook niet per ongeluk weggooien.
+
+> **Klokken.** Het kwartier wordt gemeten met de klok van de pc die kijkt. Loopt
+> die meer dan een kwartier vóór op de andere, dan zou hij een levend lock voor
+> verweesd kunnen aanzien. Punt 1 hierboven vangt dat op Windows alsnog af, maar
+> het is geen kwaad om de tijd op beide machines gewoon te laten synchroniseren.
+
+### Instellingen
+
+| Sleutel | Standaard | Betekenis |
+| --- | --- | --- |
+| `SharedLocks` | `true` | Lock-bestanden plaatsen. Op `false` als er maar één pc draait |
+| `LockStaleMinutes` | `15` | Na hoeveel minuten stilte een lock als verweesd geldt (minimaal 2) |
+
+Achtergebleven lock-bestanden waarvan de bron niet meer bestaat worden bij het
+scannen opgeruimd. Dat kost geen extra ronde over de share: ze komen in dezelfde
+opsomming voorbij. Een lock waarvan de bron er nog wél is blijft staan — die kan
+van een pc zijn die op dit moment aan het werk is.
 
 ## De bron eerst lokaal zetten
 
@@ -797,6 +926,8 @@ in het instellingenbestand, dus met de hand aanpassen kan.
 | --- | --- | --- |
 | `PrefetchToWorkDir` | `true` | Bron eerst naar de werkmap kopiëren |
 | `PrefetchOnlyNetwork` | `true` | Alleen bij een UNC-pad of netwerkschijf |
+| `SharedLocks` | `true` | Lock-bestanden plaatsen voor twee pc's op dezelfde map |
+| `LockStaleMinutes` | `15` | Wanneer een lock als verweesd geldt |
 | `RestoreQueue` | `false` | Wachtrij bewaren over een herstart heen |
 | `Recursive`, `KeepDate`, `SmartRetry` | `true` | Zie hierboven |
 

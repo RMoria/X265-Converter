@@ -185,6 +185,36 @@ $script:PrefetchToWorkDir  = $true
 # levert niets op en kost alleen schijfruimte.
 $script:PrefetchOnlyNetwork = $true
 
+# ---------------------------------------------------------------------
+#  Twee computers op dezelfde map
+#
+#  Draaien er twee pc's op dezelfde (net)werkmap, dan moeten ze niet
+#  allebei aan hetzelfde bestand beginnen. Voordat er aan een bestand
+#  wordt begonnen legt de pc er een klein tekstbestandje naast:
+#
+#      aflevering 12.mkv.x265lock
+#
+#  Dat bestandje wordt aangemaakt met 'alleen als het nog niet bestaat'.
+#  Dat is aan de serverkant EEN handeling die of lukt of faalt - er zit
+#  geen moment tussen waarin de tweede pc ertussen kan komen. Een gedeeld
+#  lijstje in een txt-bestand kan dat niet: twee pc's lezen dat lijstje,
+#  vullen het allebei aan en schrijven het allebei terug, en dan is een
+#  van de twee regels weg.
+#
+#  Zet dit op $false als er maar een pc aan het werk is. Het scheelt per
+#  bestand twee kleine handelingen op de share; verder niets.
+$script:SharedLocks = $true
+
+# Hoe lang mag een lock stil zijn voordat hij als verweesd geldt? De
+# eigenaar werkt zijn lock elke minuut bij. Blijft dat een kwartier uit,
+# dan is die pc afgesloten, gecrasht of van het netwerk gevallen en mag
+# een ander het bestand overnemen.
+#
+# Op Windows is dit alleen het vangnet: zolang de eigenaar leeft houdt
+# hij het lock-bestand ook echt geopend, en dan kan geen andere pc hem
+# afpakken - ook niet als de klokken van de twee machines uiteenlopen.
+$script:LockStaleMinutes = 15.0
+
 # Wachtrij bewaren over een herstart heen. Staat UIT: bij het opstarten
 # begint de lijst leeg, zodat een nieuwe scan niet bij de resten van de
 # vorige keer komt te staan. Met deze instelling uit wordt de wachtrij ook

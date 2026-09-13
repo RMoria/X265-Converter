@@ -3,7 +3,7 @@
 Video naar H.265 / HEVC omzetten op Windows, met een grafische interface.
 Eén PowerShell-script plus een starter; verder alleen ffmpeg.
 
-**Versie 1.2** — [wat er per versie is veranderd](LEESMIJ-X265-Converter.md#wat-er-per-versie-is-veranderd)
+**Versie 1.3** — [wat er per versie is veranderd](LEESMIJ-X265-Converter.md#wat-er-per-versie-is-veranderd)
 
 ![PowerShell 5.1](https://img.shields.io/badge/PowerShell-5.1-blue)
 ![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-blue)
@@ -32,6 +32,11 @@ is gaan zitten:
 - **Sporen worden vooraf uitgezocht.** Timecode- en datastromen kan MKV
   niet opslaan, mov_text-ondertitels moeten naar srt, en een
   omslagafbeelding hoeft niet door de encoder.
+- **Twee computers kunnen op dezelfde map werken.** Voor elk bestand komt er
+  een lock-bestandje naast te staan, aangemaakt met "alleen als het nog niet
+  bestaat" — één handeling aan de serverkant, dus zonder gat waarin de tweede
+  pc ertussen kan komen. Valt een pc uit, dan komt zijn bestand vanzelf weer
+  vrij.
 - **Een bron op een netwerklocatie wordt eerst lokaal gezet.** ffmpeg leest
   tijdens het encoderen heen en weer door het bestand; zonder die kopie
   staat er urenlang verkeer op de share. Er wordt er één tegelijk vooruit

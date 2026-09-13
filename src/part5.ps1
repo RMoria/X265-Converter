@@ -18,6 +18,14 @@ $ConvertWorker = {
         $pd = $sync.WallSec - $sync.ActiveSec
         if ($pd -lt 0) { $pd = 0 }
         $sync.PausedSec = $pd
+
+        # De hartslag van het lock hoort hier en niet in elke lus apart.
+        # Update-Timers wordt aangeroepen vanuit ALLE poll-lussen -
+        # encoderen, remuxen, opvullen, kopieren, verplaatsen, wachten
+        # tijdens een pauze - dus zo kan er geen lus zijn die hem vergeet.
+        # Beat-Lock houdt zichzelf op een keer per minuut, dus dit kost
+        # niets.
+        Beat-Lock $script:HuidigLock
     }
 
     function Sync-PauseState {
@@ -1054,6 +1062,15 @@ $ConvertWorker = {
         $naam = [IO.Path]::GetFileName($bron)
         if ([string]::IsNullOrWhiteSpace($naam)) { return $null }
 
+        # Vooruit halen heeft geen zin als een andere pc dit bestand al
+        # onder handen heeft: straks bij het oppakken lukt het lock toch
+        # niet en dan is er voor niets een paar GB over het netwerk
+        # getrokken. Alleen kijken, niets claimen - het claimen gebeurt in
+        # de hoofdlus.
+        if ($script:LockAan -and -not (Test-LockFree -SourcePath $bron -StaleMinutes $script:LockStale)) {
+            return $null
+        }
+
         # Past het? Er komt straks ook een encode-uitvoer in dezelfde map,
         # dus vragen om het dubbele plus wat lucht.
         try {
@@ -1376,6 +1393,22 @@ $ConvertWorker = {
         $pre       = $null
         $preHuidig = $null
 
+        # $lock      : het lock van het bestand dat nu onder handen is
+        # $bezet     : bestanden die een andere pc had vastgehouden
+        # $mopRonde  : de tweede en laatste ronde langs die bestanden
+        $lock     = $null
+        $bezet    = New-Object System.Collections.ArrayList
+        $mopRonde = $false
+        $script:HuidigLock = $null
+
+        $lockAan   = $true
+        if ($st.ContainsKey('SharedLocks')) { $lockAan = [bool]$st.SharedLocks }
+        $lockStale = 15.0
+        if ($st.ContainsKey('LockStaleMinutes') -and $st.LockStaleMinutes) { $lockStale = [double]$st.LockStaleMinutes }
+        $script:LockAan   = $lockAan
+        $script:LockStale = $lockStale
+        if ($lockAan) { W ("Gedeelde map: er wordt per bestand een lock geplaatst (verweesd na {0:N0} min)." -f $lockStale) }
+
         while ($true) {
 
             Update-Timers
@@ -1391,7 +1424,74 @@ $ConvertWorker = {
             if ($sync.StopAfterCurrent) { break }
 
             $job = Get-NextJob
-            if ($job -eq $null) { break }        # wachtrij leeg: klaar
+
+            if ($job -eq $null) {
+                # Wachtrij leeg. Stonden er bestanden die de andere pc
+                # vasthield, dan nog EEN ronde: die pc kan inmiddels klaar
+                # zijn of gestopt. Precies een ronde - een bestand dat de
+                # ander wel afmaakt komt nooit meer vrij (het origineel is
+                # dan weg), dus blijven wachten heeft geen zin.
+                if ($bezet.Count -gt 0 -and -not $mopRonde) {
+                    $mopRonde = $true
+                    W ''
+                    W ("{0} bestand(en) waren bij een andere pc in gebruik; nog een keer kijken." -f $bezet.Count)
+                    Start-Sleep -Seconds 5
+                    $terug = @($bezet.ToArray())
+                    $bezet.Clear()
+                    $q = $sync.Queue
+                    [System.Threading.Monitor]::Enter($q.SyncRoot)
+                    try { foreach ($b in $terug) { $b.Queued = $true; [void]$q.Add($b) } }
+                    finally { [System.Threading.Monitor]::Exit($q.SyncRoot) }
+                    continue
+                }
+                break                            # wachtrij leeg: klaar
+            }
+
+            # ---- staat de bron er nog? ------------------------------
+            #  Bij twee pc's op dezelfde map is de lijst een momentopname.
+            #  De ander kan dit bestand inmiddels hebben omgezet, waarna
+            #  het origineel is verdwenen.
+            $bronErNog = $false
+            try { $bronErNog = [System.IO.File]::Exists([string]$job.FullPath) } catch { }
+            if (-not $bronErNog) {
+                $job.Status     = 'Niet gevonden'
+                $job.ResultText = 'De bron is er niet meer; mogelijk door een andere pc gedaan.'
+                $job.Queued     = $false
+                $job.QueueText  = ''
+                W ("Overgeslagen, bron bestaat niet meer: {0}" -f $job.FullPath) 'WAARS'
+                continue
+            }
+
+            # ---- is een andere pc er al mee bezig? ------------------
+            $lock = $null
+            if ($lockAan) {
+                $poging = Take-Lock -SourcePath ([string]$job.FullPath) `
+                                    -StaleMinutes $lockStale -Stamp ([string]$st.AppStamp)
+                if ($poging.Ok) {
+                    $lock = $poging.Lock
+                    # Ook in de scriptscope: de hartslag wordt geklopt vanuit
+                    # de poll-lussen van encoderen, remuxen, opvullen en
+                    # kopieren, en die zitten in aparte functies.
+                    $script:HuidigLock = $lock
+                }
+                elseif ($poging.Busy) {
+                    $job.Status     = 'Andere pc bezig'
+                    $job.ResultText = $(if ($poging.Owner) { "In gebruik door $($poging.Owner)" } else { 'In gebruik door een andere pc' })
+                    $job.Queued     = $false
+                    $job.QueueText  = ''
+                    if (-not $mopRonde) { [void]$bezet.Add($job) }
+                    W ("Overgeslagen, {0}: {1}" -f $job.ResultText.ToLower(), $job.Name)
+                    continue
+                }
+                else {
+                    # Lock kon niet worden aangemaakt - map alleen-lezen of
+                    # iets dergelijks. Niet blijven hangen: doorgaan zonder
+                    # lock is beter dan niets doen, en als de map echt niet
+                    # beschrijfbaar is loopt de conversie zo dadelijk toch
+                    # vast en pakt de noodstop het op.
+                    W ("Er kon geen lock worden geplaatst naast {0}; er wordt zonder lock doorgewerkt." -f $job.Name) 'WAARS'
+                }
+            }
 
             $sync.CurrentJob = $job
             $preHuidig       = $null
@@ -1448,6 +1548,9 @@ $ConvertWorker = {
             if ($sync.Cancel) {
                 Stop-Prefetch $preHuidig
                 $preHuidig = $null
+                Release-Lock $lock
+                $lock = $null
+                $script:HuidigLock = $null
                 $job.Status = 'Afgebroken'
                 $job.Queued = $false
                 $sync.CurrentJob = $null
@@ -1602,6 +1705,7 @@ $ConvertWorker = {
             # VORIGE bestand vast als de encode nu mislukt, en dan zou die
             # mislukking ten onrechte niet meetellen voor de noodstop.
             $vcp       = $false
+            $lockKwijt = $false
 
             # ---- mislukt --------------------------------------------
             if (-not $encodeOk) {
@@ -1793,6 +1897,31 @@ $ConvertWorker = {
                     $jobDone           = $true
                     W 'Het omgezette bestand is weggegooid, het origineel blijft ongewijzigd staan.' 'WAARS'
                 }
+                elseif (-not (Test-LockOwned $lock)) {
+                    # ---- het lock is onderweg afgepakt ------------------
+                    #
+                    #  Kan gebeuren als deze pc lang stil is geweest - in
+                    #  slaapstand, of het netwerk was een kwartier weg. De
+                    #  andere pc heeft het bestand dan overgenomen en is er
+                    #  misschien al mee klaar. Ons resultaat gaat NIET over
+                    #  dat van hem heen; dat zou twee halve bestanden of
+                    #  een verdwenen origineel kunnen opleveren.
+                    $lockKwijt = $true
+                    Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
+
+                    $eig = ''
+                    try { $eig = [string](Read-LockInfo (Get-LockPath $job.FullPath)).Pc } catch { }
+
+                    $job.Status     = 'Lock kwijt'
+                    $job.ResultText = $(if ($eig) { "Overgenomen door $eig; resultaat weggegooid" }
+                                        else      { 'Door een andere pc overgenomen; resultaat weggegooid' })
+                    $sync.Warned       = $sync.Warned + 1
+                    $sync.DoneVideoSec = $sync.DoneVideoSec + $job.DurationSec
+                    $job.EncodeSec     = $swActive.Elapsed.TotalSeconds - $activeBefore
+                    $jobDone           = $true
+                    W ("Het lock op {0} is onderweg overgenomen door een andere pc." -f $job.Name) 'FOUT'
+                    W 'Het omgezette bestand is weggegooid en het origineel blijft ongemoeid. Deze pc is waarschijnlijk een tijd stil geweest (slaapstand of netwerk weg).' 'FOUT'
+                }
                 else {
                     # ---- verplaatsen ------------------------------------
                     $newLen = [long]0
@@ -1897,6 +2026,12 @@ $ConvertWorker = {
             }
 
             # ---- afronden per bestand -------------------------------
+            # Het lock hoort los ZODRA dit bestand klaar is, en niet pas aan
+            # het eind van de rit: de andere pc mag er direct weer bij.
+            Release-Lock $lock
+            $lock = $null
+            $script:HuidigLock = $null
+
             if ($jobDone) {
                 $sync.JobsDone = $sync.JobsDone + 1
                 $job.Queued    = $false
@@ -1909,7 +2044,8 @@ $ConvertWorker = {
             $sync.CurDurationSec = 0
 
             # ---- noodstop na drie fouten op rij ---------------------
-            if (Register-Outcome -Ok $jobOk -FileName $job.Name -Reason $jobReason -CountsForStreak (-not $vcp)) {
+            if (Register-Outcome -Ok $jobOk -FileName $job.Name -Reason $jobReason `
+                                 -CountsForStreak (-not $vcp -and -not $lockKwijt)) {
                 W '' 'FOUT'
                 W ("NOODSTOP: {0} keer op rij fout. Er is vermoedelijk iets structureel mis (bijvoorbeeld een read-only share of een volle schijf)." -f $st.MaxFailStreak) 'FOUT'
                 W 'De rest van de wachtrij blijft staan; los de oorzaak op en druk opnieuw op Start.' 'FOUT'
@@ -1926,6 +2062,13 @@ $ConvertWorker = {
         Stop-Prefetch $pre
         $preHuidig = $null
         $pre       = $null
+        Release-Lock $lock
+        $lock = $null
+        $script:HuidigLock = $null
+
+        if ($bezet.Count -gt 0) {
+            W ("{0} bestand(en) overgeslagen omdat een andere pc ermee bezig was." -f $bezet.Count)
+        }
 
         # ---- eindrapport --------------------------------------------
         $savedTotal = $sync.OrigBytes - $sync.NewBytes
@@ -1962,6 +2105,11 @@ $ConvertWorker = {
         # in de werkmap achterblijven.
         try { Stop-Prefetch $preHuidig } catch { }
         try { Stop-Prefetch $pre }       catch { }
+
+        # En hetzelfde vangnet voor het lock: blijft dat staan, dan denkt de
+        # andere pc nog een kwartier dat wij ermee bezig zijn.
+        try { Release-Lock $script:HuidigLock } catch { }
+        $script:HuidigLock = $null
 
         $swWall.Stop(); $swActive.Stop()
         $sync.CurrentJob  = $null

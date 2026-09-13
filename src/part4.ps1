@@ -3,6 +3,280 @@
 # 7.  Hulpfuncties die ook in de werk-thread nodig zijn
 # ---------------------------------------------------------------------
 
+# ---------------------------------------------------------------------
+#  Lock-bestanden: twee computers op dezelfde map
+#
+#  Het lock-bestand heet <bronnaam met extensie>.x265lock en staat naast
+#  de bron. Dus in dezelfde map, en niet in een centrale lijst: de ene pc
+#  kent die map als \\10.0.0.242\g\One Piece en de andere misschien als
+#  G:\One Piece of gewoon als C:\g\One Piece. Een centrale lijst op pad
+#  zou die drie als drie verschillende bestanden zien; een lock naast de
+#  bron heeft daar geen last van.
+#
+#  Het bestandje is leesbare tekst, zodat je in Kladblok kunt zien welke
+#  pc ergens mee bezig is:
+#
+#      pc=ACERROB
+#      pid=12345
+#      gebruiker=rob
+#      bestand=aflevering 12.mkv
+#      laatst=2026-09-13T20:09:11Z
+#      versie=X265 Converter 1.3 (2026-09-14)
+#
+#  Twee sloten op de deur:
+#
+#   1. AANMAKEN met FileMode::CreateNew. Bestaat het al, dan faalt het.
+#      Dat is de harde garantie en die werkt overal hetzelfde.
+#   2. OPEN HOUDEN met FileShare::Read zolang de conversie loopt. Op
+#      Windows (en over SMB) kan een andere pc het bestand dan niet
+#      hernoemen of weggooien, ook niet als hij denkt dat het lock oud
+#      is. Op Linux wordt dit niet afgedwongen; daar doet alleen punt 1
+#      en het tijdstempel het werk. Voor dit programma is dat geen
+#      probleem - het draait op Windows - maar de tests in deze map
+#      draaien wel op Linux en toetsen dus bewust punt 1.
+# ---------------------------------------------------------------------
+
+function Get-LockPath {
+    param([string]$SourcePath)
+    return ($SourcePath + '.x265lock')
+}
+
+function Read-LockInfo {
+    param([string]$LockPath)
+
+    $r = @{ Pc = ''; Proces = ''; Bestand = ''; Laatst = $null }
+    $txt = ''
+    try {
+        $fs = New-Object System.IO.FileStream($LockPath,
+            [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::Read,
+            [System.IO.FileShare]::ReadWrite)
+        try {
+            $sr = New-Object System.IO.StreamReader($fs)
+            $txt = $sr.ReadToEnd()
+        }
+        finally { $fs.Dispose() }
+    }
+    catch { return $r }
+
+    foreach ($regel in ($txt -split "`r?`n")) {
+        $i = $regel.IndexOf('=')
+        if ($i -lt 1) { continue }
+        $sleutel = $regel.Substring(0, $i).Trim()
+        $waarde  = $regel.Substring($i + 1).Trim()
+        if ($sleutel -eq 'pc')      { $r.Pc      = $waarde }
+        if ($sleutel -eq 'pid')     { $r.Proces  = $waarde }
+        if ($sleutel -eq 'bestand') { $r.Bestand = $waarde }
+        if ($sleutel -eq 'laatst') {
+            $d = [DateTime]::MinValue
+            $stijl = [System.Globalization.DateTimeStyles]::AdjustToUniversal -bor `
+                     [System.Globalization.DateTimeStyles]::AssumeUniversal
+            if ([DateTime]::TryParse($waarde,
+                    [System.Globalization.CultureInfo]::InvariantCulture, $stijl, [ref]$d)) {
+                $r.Laatst = $d
+            }
+        }
+    }
+    return $r
+}
+
+function Get-LockAge {
+    param([string]$LockPath)
+
+    # Hoe lang geleden liet de eigenaar voor het laatst van zich horen,
+    # in minuten? Er wordt naar twee dingen gekeken - het tijdstempel IN
+    # het bestand en dat van het bestand zelf - en de jongste telt.
+    # Windows werkt het tijdstempel van een geopend bestand niet altijd
+    # meteen bij, en over SMB al helemaal niet; het tijdstempel in de
+    # inhoud wordt wel elke keer echt weggeschreven.
+    $jongste = [DateTime]::MinValue
+    try { $jongste = (Get-Item -LiteralPath $LockPath -ErrorAction Stop).LastWriteTimeUtc } catch { }
+
+    $info = Read-LockInfo $LockPath
+    if ($info.Laatst -ne $null -and $info.Laatst -gt $jongste) { $jongste = $info.Laatst }
+
+    if ($jongste -eq [DateTime]::MinValue) { return [double]::MaxValue }
+    return ([DateTime]::UtcNow - $jongste).TotalMinutes
+}
+
+function Write-LockBody {
+    param($Stream, [string]$Bestand, [string]$Stamp)
+
+    $tekst = (@(
+        ('pc={0}'        -f [System.Environment]::MachineName)
+        ('pid={0}'       -f $PID)
+        ('gebruiker={0}' -f [System.Environment]::UserName)
+        ('bestand={0}'   -f $Bestand)
+        ('laatst={0}'    -f ([DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')))
+        ('versie={0}'    -f $Stamp)
+    ) -join "`r`n") + "`r`n"
+
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($tekst)
+    $Stream.Position = 0
+    $Stream.Write($bytes, 0, $bytes.Length)
+    $Stream.SetLength($bytes.Length)
+    $Stream.Flush($true)
+}
+
+function Take-Lock {
+    param(
+        [string]$SourcePath,
+        [double]$StaleMinutes = 15.0,
+        [string]$Stamp = ''
+    )
+
+    # Geeft terug:
+    #   Ok=$true                     wij hebben hem, .Lock moet later los
+    #   Ok=$false, Busy=$true        een andere pc is ermee bezig
+    #   Ok=$false, Busy=$false       lock kon niet worden aangemaakt
+    $pad  = Get-LockPath $SourcePath
+    $naam = [System.IO.Path]::GetFileName($SourcePath)
+
+    for ($poging = 1; $poging -le 2; $poging++) {
+
+        $fs = $null
+        try {
+            $fs = New-Object System.IO.FileStream($pad,
+                [System.IO.FileMode]::CreateNew,
+                [System.IO.FileAccess]::ReadWrite,
+                [System.IO.FileShare]::Read)
+        }
+        catch { $fs = $null }
+
+        if ($fs -ne $null) {
+            try { Write-LockBody -Stream $fs -Bestand $naam -Stamp $Stamp } catch { }
+            return @{
+                Ok   = $true
+                Busy = $false
+                Lock = [pscustomobject]@{
+                    Path    = $pad
+                    Stream  = $fs
+                    Bestand = $naam
+                    Stamp   = $Stamp
+                    Laatst  = [DateTime]::UtcNow
+                }
+            }
+        }
+
+        # Aanmaken lukte niet. Ligt er echt een lock, of is er iets anders
+        # mis - map alleen-lezen, pad te lang, share weg?
+        $bestaat = $false
+        try { $bestaat = [System.IO.File]::Exists($pad) } catch { }
+        if (-not $bestaat) {
+            return @{ Ok = $false; Busy = $false; Owner = ''; AgeMin = 0.0 }
+        }
+
+        if ($poging -ge 2) { break }
+
+        $leeftijd = Get-LockAge $pad
+        if ($leeftijd -lt $StaleMinutes) {
+            $info = Read-LockInfo $pad
+            return @{ Ok = $false; Busy = $true; Owner = [string]$info.Pc; AgeMin = $leeftijd }
+        }
+
+        # Verweesd lock. Overnemen gebeurt met een HERNOEMING en niet met
+        # een verwijdering. Hernoemen kan maar een keer slagen, dus twee
+        # pc's die tegelijk tot dezelfde conclusie komen kunnen niet
+        # allebei doorlopen - en ze kunnen elkaars zojuist aangemaakte
+        # verse lock ook niet per ongeluk weggooien.
+        $weg = $pad + '.oud_' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+        try { [System.IO.File]::Move($pad, $weg) }
+        catch {
+            # Hernoemen mislukt: of een ander was ons voor, of de eigenaar
+            # houdt het bestand op Windows gewoon nog open. Beide keren is
+            # het antwoord hetzelfde: afblijven.
+            $info = Read-LockInfo $pad
+            return @{ Ok = $false; Busy = $true; Owner = [string]$info.Pc; AgeMin = $leeftijd }
+        }
+        try { [System.IO.File]::Delete($weg) } catch { }
+    }
+
+    return @{ Ok = $false; Busy = $true; Owner = ''; AgeMin = 0.0 }
+}
+
+function Beat-Lock {
+    param($Lock, [double]$EverySeconds = 60.0)
+
+    # Laat de andere pc weten dat we nog leven. Houdt zichzelf op een keer
+    # per minuut; de aanroepers zitten in poll-lussen die veel vaker langs
+    # komen.
+    if ($Lock -eq $null) { return }
+    if (([DateTime]::UtcNow - $Lock.Laatst).TotalSeconds -lt $EverySeconds) { return }
+    try {
+        Write-LockBody -Stream $Lock.Stream -Bestand $Lock.Bestand -Stamp $Lock.Stamp
+        $Lock.Laatst = [DateTime]::UtcNow
+    }
+    catch { }
+}
+
+function Release-Lock {
+    param($Lock)
+
+    if ($Lock -eq $null) { return }
+
+    # Take-Lock geeft een uitslag terug met het lock erin. Wordt die
+    # uitslag hier doorgegeven in plaats van het lock zelf, dan is dat
+    # een vergissing met vervelende gevolgen: het lock blijft dan een
+    # kwartier liggen en de andere pc kan er niet bij. Dus opvangen.
+    if ($Lock.PSObject.Properties['Lock']) { $Lock = $Lock.Lock }
+    if ($Lock -eq $null) { return }
+
+    try { $Lock.Stream.Dispose() } catch { }
+    try { [System.IO.File]::Delete($Lock.Path) } catch { }
+}
+
+function Test-LockOwned {
+    param($Lock)
+
+    # Hebben we dit lock nog steeds? Na een slaapstand of een lange
+    # netwerkstoring kan een andere pc hem als verweesd hebben beschouwd
+    # en zelf aan het bestand zijn begonnen. Dat is het moment om NIET
+    # ons resultaat over dat van de ander heen te zetten.
+    if ($Lock -eq $null) { return $true }                       # zonder lock gewerkt
+    if ($Lock.PSObject.Properties['Lock']) { $Lock = $Lock.Lock }
+    if ($Lock -eq $null) { return $true }
+
+    $bestaat = $false
+    try { $bestaat = [System.IO.File]::Exists($Lock.Path) } catch { return $true }
+
+    if (-not $bestaat) {
+        # Weg. Dat kan een andere pc zijn geweest die inmiddels ook alweer
+        # klaar is, maar ook een hik van de share. Gewoon opnieuw proberen
+        # te plaatsen: lukt dat, dan is er niemand anders en gaan we door.
+        $fs = $null
+        try {
+            $fs = New-Object System.IO.FileStream($Lock.Path,
+                [System.IO.FileMode]::CreateNew,
+                [System.IO.FileAccess]::ReadWrite,
+                [System.IO.FileShare]::Read)
+        }
+        catch { return $false }
+        try { $Lock.Stream.Dispose() } catch { }
+        $Lock.Stream = $fs
+        $Lock.Laatst = [DateTime]::MinValue
+        return $true
+    }
+
+    $info = Read-LockInfo $Lock.Path
+    if ([string]::IsNullOrWhiteSpace([string]$info.Pc) -and
+        [string]::IsNullOrWhiteSpace([string]$info.Proces)) {
+        # Onleesbaar. Geen reden om uren rekenwerk weg te gooien.
+        return $true
+    }
+    return ((([string]$info.Pc) -eq [System.Environment]::MachineName) -and
+            (([string]$info.Proces) -eq ([string]$PID)))
+}
+
+function Test-LockFree {
+    param([string]$SourcePath, [double]$StaleMinutes = 15.0)
+
+    # Alleen kijken, niets claimen. Voor de vraag of het zin heeft een
+    # bestand alvast naar de werkmap te halen.
+    $pad = Get-LockPath $SourcePath
+    try { if (-not [System.IO.File]::Exists($pad)) { return $true } } catch { return $true }
+    return ((Get-LockAge $pad) -ge $StaleMinutes)
+}
+
 $HelperText = @"
 function Format-Size {
 $(${function:Format-Size})
@@ -21,6 +295,33 @@ function Quote-Arg {
     param([string]`$a)
     if (`$a -match '[\s"]') { return '"' + (`$a -replace '"','\"') + '"' }
     return `$a
+}
+function Get-LockPath {
+$(${function:Get-LockPath})
+}
+function Read-LockInfo {
+$(${function:Read-LockInfo})
+}
+function Get-LockAge {
+$(${function:Get-LockAge})
+}
+function Write-LockBody {
+$(${function:Write-LockBody})
+}
+function Take-Lock {
+$(${function:Take-Lock})
+}
+function Beat-Lock {
+$(${function:Beat-Lock})
+}
+function Release-Lock {
+$(${function:Release-Lock})
+}
+function Test-LockOwned {
+$(${function:Test-LockOwned})
+}
+function Test-LockFree {
+$(${function:Test-LockFree})
 }
 "@
 
@@ -241,6 +542,11 @@ $ScanWorker = {
         $seen  = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
         $files = New-Object System.Collections.ArrayList
 
+        # Lock-bestanden komen in dezelfde opsomming langs. Ze worden hier
+        # apart gehouden en na afloop nagelopen, zodat er geen tweede ronde
+        # over de share nodig is.
+        $locks = New-Object System.Collections.ArrayList
+
         foreach ($folder in $st.Folders) {
 
             if ($sync.ScanCancel) { break }
@@ -258,6 +564,12 @@ $ScanWorker = {
 
             foreach ($f in $items) {
                 if ($sync.ScanCancel) { break }
+
+                if ($f.Name -like '*.x265lock' -or $f.Name -like '*.x265lock.oud_*') {
+                    [void]$locks.Add($f)
+                    continue
+                }
+
                 if (-not $exts.ContainsKey($f.Extension.ToLower())) { continue }
                 if ($f.Length -le 0) { continue }
                 if ($f.FullName -like '*\ffmpeg\bin\*') { continue }
@@ -275,6 +587,44 @@ $ScanWorker = {
                 }
 
                 if ($seen.Add($f.FullName)) { [void]$files.Add($f) }
+            }
+        }
+
+        # ---- 1b. achtergebleven lock-bestanden opruimen -------------
+        #
+        #  Een lock waarvan de bron niet meer bestaat kan alleen van een
+        #  afgebroken run zijn: het bestand is omgezet, het origineel is
+        #  weg, maar het opruimen is er niet meer van gekomen. Een lock
+        #  waarvan de bron er nog wel is blijft staan - die kan van een pc
+        #  zijn die op dit moment aan het werk is.
+        if ($locks.Count -gt 0 -and -not $sync.ScanCancel) {
+            $opgeruimd = 0
+            $stale = 15.0
+            if ($st.LockStaleMinutes) { $stale = [double]$st.LockStaleMinutes }
+            foreach ($lk in $locks) {
+                if ($sync.ScanCancel) { break }
+
+                $bron = ''
+                if ($lk.Name -like '*.x265lock') {
+                    $bron = $lk.FullName.Substring(0, $lk.FullName.Length - 9)
+                }
+                else {
+                    # een '.oud_xxxxxxxx'-restje van een overname
+                    $i = $lk.FullName.LastIndexOf('.x265lock.oud_')
+                    if ($i -gt 0) { $bron = $lk.FullName.Substring(0, $i) }
+                }
+                if (-not $bron) { continue }
+
+                $bronErNog = $false
+                try { $bronErNog = [System.IO.File]::Exists($bron) } catch { $bronErNog = $true }
+                if ($bronErNog) { continue }
+                if ((Get-LockAge $lk.FullName) -lt $stale) { continue }
+
+                try { Remove-Item -LiteralPath $lk.FullName -Force -ErrorAction Stop; $opgeruimd++ }
+                catch { }
+            }
+            if ($opgeruimd -gt 0) {
+                W ("{0} achtergebleven lock-bestand(en) opgeruimd." -f $opgeruimd)
             }
         }
 

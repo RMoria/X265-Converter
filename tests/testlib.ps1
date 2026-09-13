@@ -80,7 +80,7 @@ function Reset-Run {
 }
 
 function Std-Settings {
-    param([bool]$DeleteOrig=$true,[bool]$Subs=$true,[string]$WorkDir='/tmp/x265work',[string]$AudioMode='copy',[bool]$TailCheck=$true,[bool]$Remux=$false,[bool]$RemuxAuto=$true,[bool]$Pad=$true,[double]$Margin=2.0,[double]$Limit=30.0,[bool]$Prefetch=$false,[bool]$PrefetchNetOnly=$true)
+    param([bool]$DeleteOrig=$true,[bool]$Subs=$true,[string]$WorkDir='/tmp/x265work',[string]$AudioMode='copy',[bool]$TailCheck=$true,[bool]$Remux=$false,[bool]$RemuxAuto=$true,[bool]$Pad=$true,[double]$Margin=2.0,[double]$Limit=30.0,[bool]$Prefetch=$false,[bool]$PrefetchNetOnly=$true,[bool]$Locks=$false,[double]$StaleMin=15.0)
     if (-not (Test-Path $WorkDir)) { New-Item -ItemType Directory -Path $WorkDir -Force | Out-Null }
     return @{
         Codec='libx265'; Preset='ultrafast'; Crf=32; WorkDir=$WorkDir
@@ -91,6 +91,8 @@ function Std-Settings {
         AppStamp="X265 Converter 1.2 (test)"
         PrefetchToWorkDir=$Prefetch
         PrefetchOnlyNetwork=$PrefetchNetOnly
+        SharedLocks=$Locks
+        LockStaleMinutes=$StaleMin
         AudioMode=$AudioMode
         FinalRemux=$Remux
         RemuxIfNeeded=$RemuxAuto
