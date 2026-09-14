@@ -348,4 +348,55 @@ Check 'toch gewoon afgemaakt'       ($sync.Success -eq 1)                       
 Check 'uitvoer staat er'            (Test-Path '/tmp/lk7/hik.x265.mkv')
 Check 'geen lock achtergebleven'    ((@(Get-ChildItem '/tmp/lk7' -Filter '*.x265lock')).Count -eq 0)
 ''
+'--- 12. bron met een uitvoer ernaast wordt niet nog eens gedaan ---'
+# Dit is wat er op 14 september misging: pc1 zette een bestand om maar kon
+# het origineel niet verwijderen ("x265 aangemaakt, origineel NIET
+# verwijderd"). pc2 zag daarna een gewoon h264-bestand staan en begon
+# opnieuw - met een '(2)' als resultaat.
+Fresh '/tmp/lk8'
+MkVid '/tmp/lk8/blijven staan.mkv' 5
+& /usr/bin/ffmpeg -hide_banner -loglevel error -y -i '/tmp/lk8/blijven staan.mkv' `
+    -c:v libx265 -preset ultrafast -crf 40 -c:a copy '/tmp/lk8/blijven staan.x265.mkv' 2>$null | Out-Null
+Check 'uitvoer staat er al'         (Test-Path '/tmp/lk8/blijven staan.x265.mkv')
+
+Reset-Run (Std-Settings -DeleteOrig $true -Subs $false -AudioMode 'aac' -TailCheck $false -Locks $true)
+$ja = New-Job -FullPath '/tmp/lk8/blijven staan.mkv' -Dur 5.0
+Enqueue-Jobs @($ja)
+$w = Start-W $ConvertWorker 'conv'
+while (-not $w.Handle.IsCompleted) { Start-Sleep -Milliseconds 150 }
+Stop-W $w | Out-Null
+$lg = @(Drain-Log)
+Check 'overgeslagen'                ($ja.Status -eq 'Al omgezet')                    "($($ja.Status))"
+Check 'met uitleg'                  ($ja.ResultText -match 'HEVC-uitvoer')
+Check 'geen (2)-bestand'            (-not (Test-Path '/tmp/lk8/blijven staan.x265 (2).mkv'))
+Check 'origineel blijft staan'      (Test-Path '/tmp/lk8/blijven staan.mkv')
+Check 'niet als geslaagd geteld'    ($sync.Success -eq 0)
+Check 'gemeld in de log'            (($lg -join ' ') -match 'staat al een omgezet bestand')
+Check 'geen lock achtergebleven'    ((@(Get-ChildItem '/tmp/lk8' -Filter '*.x265lock')).Count -eq 0)
+
+# een half/kapot uitvoerbestand mag de bron NIET voor altijd blokkeren
+Fresh '/tmp/lk9'
+MkVid '/tmp/lk9/kapotte uitvoer.mkv' 5
+Set-Content '/tmp/lk9/kapotte uitvoer.x265.mkv' 'dit is geen video'
+Reset-Run (Std-Settings -DeleteOrig $false -Subs $false -AudioMode 'aac' -TailCheck $false -Locks $true)
+$jb2 = New-Job -FullPath '/tmp/lk9/kapotte uitvoer.mkv' -Dur 5.0
+Enqueue-Jobs @($jb2)
+$w = Start-W $ConvertWorker 'conv'
+while (-not $w.Handle.IsCompleted) { Start-Sleep -Milliseconds 150 }
+Stop-W $w | Out-Null
+Drain-Log | Out-Null
+Check 'kapotte uitvoer blokkeert niet' ($sync.Success -eq 1)                         "(succ=$($sync.Success))"
+''
+
+'--- 13. de lokale kopie blokkeert de andere pc niet ---'
+# Zonder FileShare::Delete kan de andere pc het origineel niet weggooien
+# zolang wij het aan het kopieren zijn. Dat was de oorzaak van
+# "origineel NIET verwijderd".
+$wt = $ConvertWorker.ToString()
+$blok = $wt.Substring($wt.IndexOf('function Start-Prefetch'))
+$blok = $blok.Substring(0, $blok.IndexOf('function Stop-Prefetch'))
+Check 'bron wordt delend geopend'   ($blok -match 'FileShare\]::Delete')
+Check 'en ook nog leesbaar/schrijf' ($blok -match 'FileShare\]::ReadWrite -bor')
+Check 'bezet -> kopie meteen weg'   ($wt -match '(?s)elseif \(\$poging\.Busy\).{0,400}Stop-Prefetch \$pre')
+''
 "====> $ok goed, $bad fout"

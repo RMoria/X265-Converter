@@ -57,7 +57,7 @@ param(
 #  LEESMIJ-X265-Converter.md.
 # ---------------------------------------------------------------------
 $AppName    = 'X265 Converter'
-$AppVersion = '1.3'
+$AppVersion = '1.5'
 $AppDate    = '2026-09-14'
 $AppTitle   = 'Video naar H.265 / HEVC'
 $AppStamp   = ('{0} {1} ({2})' -f $AppName, $AppVersion, $AppDate)

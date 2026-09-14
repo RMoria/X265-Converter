@@ -1,8 +1,8 @@
 # Video naar H.265 / HEVC — PowerShell GUI
 
-**Versie 1.3 (14 september 2026)**
+**Versie 1.5 (14 september 2026)**
 
-Het versienummer staat achter in de venstertitel (`… [v1.3]`), als eerste regel
+Het versienummer staat achter in de venstertitel (`… [v1.5]`), als eerste regel
 in de log bij het opstarten, bovenaan `X265-Converter.error.log` en als `Version`
 in het instellingenbestand. Bij een melding is dat het eerste wat je wilt weten.
 Bijwerken gaat met `$AppVersion` en `$AppDate` bovenaan het script: tweede cijfer
@@ -11,6 +11,33 @@ erbij voor nieuw gedrag, derde cijfer voor een reparatie.
 Opvolger van `convert.bat`. Eén PowerShell-script met een grafische interface.
 
 ## Wat er per versie is veranderd
+
+### 1.5 — 14 september 2026
+
+- **Het programma werkt zichzelf bij.** Bij het starten wordt gekeken of er een
+  nieuwere uitgebrachte versie op GitHub staat. Zie *Zichzelf bijwerken*.
+- **Een bron met een omgezet bestand ernaast wordt overgeslagen.** Lukt het
+  verwijderen van het origineel niet, dan bleef de bron liggen en begon de
+  andere pc er gewoon opnieuw aan, met een `(2)` als resultaat.
+- **De lokale kopie blokkeert de andere pc niet meer.** De bron werd geopend
+  zonder deelrecht om te verwijderen; zolang de kopie liep kon de andere pc het
+  origineel dus niet opruimen. Dat was de oorzaak van "x265 aangemaakt,
+  origineel NIET verwijderd".
+- **Een vooruit gehaalde kopie wordt meteen weggegooid** zodra blijkt dat een
+  andere pc dat bestand al onder handen heeft.
+
+### 1.4 — 14 september 2026
+
+- **De speelduur wordt alsnog bepaald** als de scan hem niet heeft kunnen
+  vinden. Dat gebeurt vlak voor het encoderen, langs drie wegen, en op de
+  lokale kopie als die er is — dus zonder extra netwerkverkeer.
+- **De voortgang liegt niet meer als de speelduur onbekend is.** Eerder kwam
+  "nog te doen" dan op nul uit: de bovenste balk stond vol terwijl er nog
+  duizend bestanden wachtten, en de tijdsindicatie noemde dagen. Nu wordt er
+  in dat geval op **aantal bestanden** geteld, staat de gemiddelde
+  encode-snelheid op een streepje in plaats van op een verzonnen getal, en
+  loopt de balk van het huidige bestand heen en weer in plaats van dood op
+  nul te staan.
 
 ### 1.3 — 14 september 2026
 
@@ -146,6 +173,62 @@ Kan de mutex niet worden aangemaakt — dat kan op een streng dichtgezette machi
 — dan start het programma gewoon als eerste instantie. Twee vensters is minder
 erg dan een programma dat niet opstart.
 
+## Zichzelf bijwerken
+
+Bij elke start kijkt `Bijwerken.ps1` of er op GitHub een nieuwere **uitgebrachte
+versie** staat. Zo ja, dan wordt die opgehaald en vervangen voordat het
+programma begint. Zo niet, dan gebeurt er niets en start het gewoon door.
+
+Overslaan kan:
+
+```
+X265-Converter.cmd -GeenUpdate
+```
+
+Alleen **tags** tellen mee — `v1.5`, `v1.6`. Een losse commit op `main` wordt
+genegeerd; de tag is het bewuste "dit mag eruit"-moment. Vergeet je de tag, dan
+blijven de andere pc's dus op de oude versie staan.
+
+### Drie wegen naar dezelfde uitkomst
+
+1. **git**, als het op de machine staat. Zo niet, dan wordt het eenmalig via
+   `winget install Git.Git` geprobeerd — eerst voor de gebruiker alleen (geen
+   beheerdersrechten nodig), en anders de gewone installatie.
+2. **Rechtstreeks downloaden** van `raw.githubusercontent.com`, als git er niet
+   is of niet geïnstalleerd kan worden. Dit is het vangnet en daarmee de weg die
+   op een dichtgezette machine altijd werkt.
+3. Is ook de GitHub-API onbereikbaar — sommige bedrijfsproxy's laten alleen
+   `raw.githubusercontent.com` door — dan wordt er **omhoog geteld**: bestaat
+   `v1.6`? En `v1.7`? Hooguit een handvol kleine verzoeken, en alleen als de
+   eerste twee wegen niets opleverden.
+
+### Wat er wordt vervangen, en wat niet
+
+`X265-Converter.ps1`, `LEESMIJ-X265-Converter.md` en `Bijwerken.ps1` worden
+vervangen. De vorige versie gaat eerst naar `vorige-versie\` ernaast, dus je
+kunt altijd terug.
+
+**De starter wordt nooit rechtstreeks overschreven.** `cmd.exe` leest een
+batchbestand niet in één keer in: het onthoudt een bytepositie en leest na elke
+regel verder op die plek. Vervang je het bestand tijdens het draaien, dan leest
+cmd op de oude positie verder in de nieuwe inhoud en voert half afgekapte regels
+uit. De nieuwe starter wordt daarom als `X265-Converter.cmd.nieuw` klaargezet;
+bij de volgende start wisselt een klein hulpje hem om — dat wacht eerst tot het
+oude venster weg is.
+
+### Wanneer er niets gebeurt
+
+- Er draait al een instantie. Die kan zichzelf herstarten, en dan zou hij
+  halverwege op een ander script uitkomen dan waarmee hij begon.
+- Er is geen netwerk, of de versies zijn niet op te vragen.
+- Het opgehaalde bestand deugt niet. Voordat er iets wordt vervangen wordt er
+  gecontroleerd: is het groot genoeg, staat het beloofde versienummer erin, en
+  — de belangrijkste — **parseert het als geldig PowerShell**. Een half
+  binnengekomen download die over een werkende versie heen gaat is erger dan
+  helemaal niet bijwerken.
+- Gaat het vervangen halverwege mis, dan wordt wat er al vervangen was
+  teruggezet. Je houdt nooit een mengsel van twee versies over.
+
 ## Twee computers op dezelfde map
 
 Laat je twee pc's op dezelfde (net)werkmap los, dan moeten ze niet allebei aan
@@ -179,6 +262,25 @@ wél afmaakt komt niet meer terug (het origineel is dan weg).
 Er wordt ook vlak voor het oppakken nog gekeken of de bron er überhaupt nog is.
 De lijst is een momentopname van de scan, en op een gedeelde map kan die binnen
 een uur achterlopen.
+
+### En als het origineel blijft liggen
+
+Het overslaan leunt erop dat de bron verdwijnt zodra hij is omgezet. Maar
+verwijderen kán mislukken — het bestand is nog in gebruik, de share weigert het —
+en dan blijft de bron staan met het resultaat ernaast. De regel krijgt op die pc
+de status **Let op** met "x265 aangemaakt, origineel NIET verwijderd". De andere
+pc zag daarna een gewoon h264-bestand en begon er vrolijk opnieuw aan, met een
+`(2)` als resultaat.
+
+Daarom wordt er vlak voor het oppakken ook gekeken of er al een omgezet bestand
+naast de bron ligt. Ligt er een `<naam>.x265.mkv` die ook echt HEVC is, dan is
+het werk al gedaan: de regel gaat op **Al omgezet** en er wordt niets nog een
+keer geëncodeerd. Een half of kapot uitvoerbestand telt niet mee — anders zou
+dat de bron voor altijd blokkeren.
+
+De oorzaak van dat mislukte verwijderen is ook aangepakt: de vooruit gehaalde
+kopie opende de bron zonder deelrecht om te verwijderen, zodat de andere pc er
+niet bij kon zolang die kopie liep.
 
 ### Waarom geen gedeeld lijstje
 
@@ -393,6 +495,37 @@ en de knop heet dan **2. Toevoegen aan wachtrij**.
 
 Na elke stop staat wat niet is uitgevoerd nog in de wachtrij: één keer **Start**
 en het gaat verder waar het gebleven was.
+
+## Als de speelduur onbekend is
+
+Bijna alles op het voortgangsscherm is afgeleid van de **speelduur** van de
+bestanden: het percentage per bestand is bereikte seconde gedeeld door totale
+duur, de bovenste balk is verwerkte speeltijd gedeeld door totale speeltijd, en
+de tijdsindicatie is de rest gedeeld door de gemeten snelheid.
+
+Geeft `ffprobe` die duur niet — niet elke container heeft hem in de kop, en een
+trage share helpt ook niet mee — dan valt die hele rekenkamer om. Dat zag er
+eerder zo uit: een volle bovenste balk terwijl er nog duizend bestanden in de
+wachtrij stonden, een tijdsindicatie van twaalf dagen, en een balk voor het
+huidige bestand die de hele conversie op nul bleef staan.
+
+Dat is op drie plekken opgevangen:
+
+1. **De duur wordt alsnog opgehaald** vlak voordat het encoderen begint. Eerst
+   `format=duration`, dan `stream=duration` zonder `-select_streams`, en als
+   laatste de tijdstempel van het laatste videopakket. Staat de bron inmiddels
+   lokaal, dan kost dat niets extra's. Lukt het, dan komt de duur ook gewoon in
+   de kolom te staan.
+2. **Lukt dat niet, dan telt de bovenste balk op aantal bestanden** in plaats
+   van op speeltijd, en zegt er ook bij dat hij dat doet. De tijdsindicatie
+   rekent dan met de gemiddelde wandkloktijd per afgerond bestand.
+3. **De gemiddelde encode-snelheid wordt een streepje.** Die is speeltijd
+   gedeeld door rekentijd; zonder speeltijd is elk cijfer daar verzonnen, en
+   een streepje is eerlijker dan een getal waar iemand op gaat rekenen.
+
+De balk van het huidige bestand loopt in dat geval heen en weer, met
+"0:04:12 verwerkt — speelduur onbekend" eronder. Je ziet dan nog steeds dat er
+wordt gewerkt en hoeveel, alleen niet hoe ver.
 
 ## Noodstop na drie fouten op rij
 

@@ -4,6 +4,7 @@
 # ---------------------------------------------------------------------
 
 $script:EtaRate      = 0.0
+$script:EtaFiles     = 0.0
 $script:EtaLastCalc  = $null
 $script:EtaStamp     = ''
 $script:LogLines     = 0
@@ -959,6 +960,7 @@ $ui.btnStart.Add_Click({
     while ($sync.EmergencyFiles.TryDequeue([ref]$dump)) { }
 
     $script:EtaRate     = 0.0
+    $script:EtaFiles    = 0.0
     $script:EtaLastCalc = $null
     $script:EtaStamp    = ''
     $script:ExitPending = $false

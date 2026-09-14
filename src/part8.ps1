@@ -205,6 +205,7 @@ function Invoke-Tick {
             }
             $ui.txtCurrentFile.Text = [string]$sync.ScanStatus
             $ui.txtCurrentInfo.Text = ''
+            $ui.pbCurrent.IsIndeterminate = $false
             $ui.pbCurrent.Value     = 0
             Set-Status "$wat…  video's: $($sync.ScanFound)   al HEVC: $($sync.ScanSkippedHevc)   onbruikbaar: $($sync.ScanSkippedNoVid)"
         }
@@ -231,23 +232,36 @@ function Invoke-Tick {
     $doneWork  = [double]$sync.DoneVideoSec + [double]$sync.CurVideoSec
     $totalWork = $doneWork + $remainSec
 
+    $inQueue = $sync.Queue.Count
+    $busyOne = 0
+    if ($sync.CurrentJob -ne $null) { $busyOne = 1 }
+
+    # Is de speelduur bruikbaar? Kan ffprobe de duur van de bronnen niet
+    # geven, dan is de optelling van de wachtrij nul en zou 'nog te doen'
+    # nul zijn - met een volle balk terwijl er nog honderden bestanden
+    # wachten, en een tijdsindicatie van niks. Dan liever tellen op AANTAL
+    # BESTANDEN: grover, maar het klopt tenminste.
+    $duurBruikbaar = (($qSec -gt 0) -or ($inQueue -eq 0)) -and ($totalWork -gt 0)
+
     if ($convBusy) {
 
         $ui.pbOverall.IsIndeterminate = $false
         $ui.txtOverallLabel.Text = 'Totale voortgang'
 
-        if ($totalWork -gt 0) {
+        if ($duurBruikbaar) {
             $p = 100.0 * $doneWork / $totalWork
             if ($p -gt 100) { $p = 100 }
             $ui.pbOverall.Value = $p
-        } else {
-            $ui.pbOverall.Value = 0
+            $ui.txtOverallInfo.Text = ("{0} klaar  -  {1} in wachtrij  -  {2:N1} %" -f $sync.JobsDone, $inQueue, $p)
         }
-
-        $inQueue = $sync.Queue.Count
-        $busyOne = 0
-        if ($sync.CurrentJob -ne $null) { $busyOne = 1 }
-        $ui.txtOverallInfo.Text = ("{0} klaar  -  {1} in wachtrij  -  {2:N1} %" -f $sync.JobsDone, $inQueue, $ui.pbOverall.Value)
+        else {
+            $alle = $sync.JobsDone + $inQueue + $busyOne
+            $p = 0.0
+            if ($alle -gt 0) { $p = 100.0 * $sync.JobsDone / $alle }
+            $ui.pbOverall.Value = $p
+            $ui.txtOverallInfo.Text = ("{0} klaar  -  {1} in wachtrij  -  {2:N1} %  (op aantal bestanden; speelduur onbekend)" -f `
+                $sync.JobsDone, $inQueue, $p)
+        }
 
         $phase = [string]$sync.CurPhase
         $pre   = ''
@@ -258,12 +272,26 @@ function Invoke-Tick {
         if ($sync.CurFile) { $ui.txtCurrentFile.Text = "$pre$phase : $($sync.CurFile)" }
         else               { $ui.txtCurrentFile.Text = "$pre$phase" }
 
-        $ui.pbCurrent.Value = [double]$sync.CurPhasePct
+        # Geen bekende speelduur betekent geen percentage: dat wordt
+        # berekend als bereikte seconde gedeeld door totale duur. De balk
+        # zou dan de hele conversie dood op nul blijven staan terwijl er
+        # wel degelijk wordt gewerkt. In dat geval laten we hem heen en
+        # weer lopen en tonen we hoeveel speeltijd er al door de encoder
+        # is gegaan.
+        $duurOnbekend = (($phase -eq 'Encoderen') -and ([double]$sync.CurDurationSec -le 0))
+        if ($ui.pbCurrent.IsIndeterminate -ne $duurOnbekend) { $ui.pbCurrent.IsIndeterminate = $duurOnbekend }
+        if (-not $duurOnbekend) { $ui.pbCurrent.Value = [double]$sync.CurPhasePct }
 
         $bits = New-Object System.Collections.ArrayList
-        [void]$bits.Add(('{0:N1} %' -f [double]$sync.CurPhasePct))
-        if ($sync.CurDurationSec -gt 0 -and $phase -eq 'Encoderen') {
-            [void]$bits.Add((Format-Clock ([double]$sync.CurVideoSec)) + ' / ' + (Format-Clock ([double]$sync.CurDurationSec)))
+        if ($duurOnbekend) {
+            [void]$bits.Add((Format-Clock ([double]$sync.CurVideoSec)) + ' verwerkt')
+            [void]$bits.Add('speelduur onbekend')
+        }
+        else {
+            [void]$bits.Add(('{0:N1} %' -f [double]$sync.CurPhasePct))
+            if ($sync.CurDurationSec -gt 0 -and $phase -eq 'Encoderen') {
+                [void]$bits.Add((Format-Clock ([double]$sync.CurVideoSec)) + ' / ' + (Format-Clock ([double]$sync.CurDurationSec)))
+            }
         }
         if ($sync.CurSpeed)          { [void]$bits.Add('snelheid ' + $sync.CurSpeed) }
         if ($sync.CurFps)            { [void]$bits.Add($sync.CurFps + ' fps') }
@@ -286,13 +314,47 @@ function Invoke-Tick {
             }
         }
 
-        if ($doRecalc -and $doneWork -gt 0 -and $active -gt 0) {
+        # Zonder bruikbare speelduur kan er niet op speeltijd worden
+        # gerekend. Dan maar op ervaring: hoeveel wandkloktijd kostte een
+        # bestand gemiddeld, maal wat er nog ligt. Dat kan pas zodra er een
+        # bestand af is.
+        if (-not $duurBruikbaar) {
+            if ($sync.JobsDone -gt 0 -and $active -gt 0) {
+                $perFile = $active / [double]$sync.JobsDone
+                $script:EtaRate  = -1                      # vlag: tellen op bestanden
+                $script:EtaFiles = $perFile * ($inQueue + $busyOne)
+                if ($script:EtaLastCalc -eq $null -or
+                    ((Get-Date) - $script:EtaLastCalc).TotalSeconds -ge $interval) {
+                    $script:EtaLastCalc = Get-Date
+                    $script:EtaStamp    = (Get-Date -Format 'HH:mm:ss')
+                }
+            }
+            else { $script:EtaRate = 0; $script:EtaFiles = 0 }
+        }
+        elseif ($doRecalc -and $doneWork -gt 0 -and $active -gt 0) {
             $script:EtaRate     = $doneWork / $active
             $script:EtaLastCalc = Get-Date
             $script:EtaStamp    = (Get-Date -Format 'HH:mm:ss')
         }
 
-        if ($script:EtaRate -gt 0) {
+        if (-not $duurBruikbaar) {
+            if ($script:EtaFiles -gt 0) {
+                $remain = [double]$script:EtaFiles
+                $ui.stEta.Text = Format-Span $remain
+                if ($sync.IsPaused) { $ui.stEtaClock.Text = 'gepauzeerd' }
+                else {
+                    $done = (Get-Date).AddSeconds($remain)
+                    if ($done.Date -eq (Get-Date).Date) { $ui.stEtaClock.Text = $done.ToString('HH:mm') }
+                    else { $ui.stEtaClock.Text = $done.ToString('ddd HH:mm') }
+                }
+                $ui.txtStatus2.Text = "tijdsindicatie op aantal bestanden, bijgewerkt $($script:EtaStamp)"
+            }
+            else {
+                $ui.stEta.Text      = 'berekenen…'
+                $ui.stEtaClock.Text = '--:--'
+            }
+        }
+        elseif ($script:EtaRate -gt 0) {
             $remain = $remainSec / $script:EtaRate
             $ui.stEta.Text = Format-Span $remain
             if ($sync.IsPaused) {
@@ -308,7 +370,11 @@ function Invoke-Tick {
             $ui.stEtaClock.Text = '--:--'
         }
 
-        if ($active -gt 0 -and $doneWork -gt 0) {
+        # Gemiddelde encode-snelheid is speeltijd gedeeld door rekentijd.
+        # Zonder bekende speelduur is dat een verzonnen getal; dan liever
+        # een streepje dan een cijfer waar iemand op gaat rekenen.
+        if (-not $duurBruikbaar) { $ui.stSpeed.Text = '-' }
+        elseif ($active -gt 0 -and $doneWork -gt 0) {
             $ui.stSpeed.Text = ('{0:N2}x' -f ($doneWork / $active))
         }
 
@@ -426,6 +492,7 @@ function Invoke-Tick {
                 $ui.txtOverallInfo.Text = ''
                 $ui.txtCurrentFile.Text = 'Geen actieve conversie'
                 $ui.txtCurrentInfo.Text = ''
+                $ui.pbCurrent.IsIndeterminate = $false
                 $ui.pbCurrent.Value     = 0
                 Set-Status $txt
                 Set-Title 'Batch Converter'
@@ -460,6 +527,7 @@ function Invoke-Tick {
         Sync-QueueOrder
 
         $ui.pbOverall.IsIndeterminate = $false
+        $ui.pbCurrent.IsIndeterminate = $false
         $ui.pbCurrent.Value     = 0
         $ui.txtCurrentFile.Text = 'Geen actieve conversie'
         $ui.txtCurrentInfo.Text = ''

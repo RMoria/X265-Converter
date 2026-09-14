@@ -15,7 +15,38 @@ rem      X265-Converter.cmd -In "D:\in\film.mkv" -Out "E:\uit\film.mkv"
 rem  -Out is optioneel; zonder -Out wordt <naam>.x265.mkv naast de bron
 rem  gezet. Draait er al een instantie, dan gaat het bestand daar
 rem  achteraan de wachtrij en komt er geen tweede venster.
+rem
+rem  Bij het starten wordt gekeken of er een nieuwere uitgebrachte versie
+rem  op GitHub staat. Overslaan kan met:
+rem      X265-Converter.cmd -GeenUpdate
 rem ===================================================================
+
+rem ===================================================================
+rem  STAP 0: een klaargezette nieuwe starter omwisselen
+rem
+rem  Dit is het allereerste wat er gebeurt, en het gebeurt door een los
+rem  hulpje dat wacht tot dit venster weg is.
+rem
+rem  Waarom niet gewoon overschrijven: cmd.exe leest een batchbestand
+rem  niet in een keer in. Het onthoudt een BYTEPOSITIE en leest na elke
+rem  regel verder op die plek. Vervang je het bestand tijdens het
+rem  draaien, dan leest cmd op de oude positie verder in de NIEUWE
+rem  inhoud - en voert half afgekapte regels uit. Daarom: hulpje wacht,
+rem  wij sluiten meteen af, pas daarna wordt er vervangen.
+rem
+rem  Alleen bij een start zonder argumenten. Met -In zou een opdracht
+rem  verloren gaan bij de herstart; die wisselt de volgende keer wel om.
+rem ===================================================================
+if exist "%~dp0X265-Converter.cmd.nieuw" if "%~1"=="" (
+    echo Nieuwe starter gevonden; omwisselen en opnieuw beginnen...
+    > "%TEMP%\x265-wissel.cmd" echo @echo off
+    >>"%TEMP%\x265-wissel.cmd" echo ping -n 3 127.0.0.1 ^>nul
+    >>"%TEMP%\x265-wissel.cmd" echo move /y "%~dp0X265-Converter.cmd.nieuw" "%~f0" ^>nul
+    >>"%TEMP%\x265-wissel.cmd" echo start "" "%~f0"
+    >>"%TEMP%\x265-wissel.cmd" echo del "%%~f0"
+    start "" /min "%TEMP%\x265-wissel.cmd"
+    exit /b 0
+)
 
 setlocal EnableExtensions EnableDelayedExpansion
 
@@ -32,6 +63,23 @@ if not exist "%PS1%" (
 
 set "PWSH=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
 if not exist "%PWSH%" set "PWSH=powershell.exe"
+
+rem ===================================================================
+rem  Bijwerken naar de nieuwste uitgebrachte versie
+rem
+rem  Bijwerken.ps1 kijkt welke versietag er op GitHub staat en haalt die
+rem  op als hij nieuwer is. Doet niets als er al een instantie draait, en
+rem  niets als het niet lukt - geen netwerk, geen rechten. Bijwerken mag
+rem  nooit in de weg zitten van gewoon kunnen starten.
+rem ===================================================================
+set "DOUPDATE=1"
+if /i "%~1"=="-GeenUpdate" (
+    set "DOUPDATE="
+    shift
+)
+if defined DOUPDATE if exist "%~dp0Bijwerken.ps1" (
+    "%PWSH%" -NoProfile -ExecutionPolicy Bypass -File "%~dp0Bijwerken.ps1"
+)
 
 rem enkele aanhalingstekens verdubbelen voor PowerShell
 set "SCRIPT=%PS1%"

@@ -256,6 +256,109 @@ $ConvertWorker = {
     }
 
     # -----------------------------------------------------------------
+    #  Speelduur van een bestand
+    #
+    #  Drie manieren, van goedkoop naar duur. De eerste is wat de scan
+    #  ook doet. Geeft die niets, dan wordt er zonder -select_streams
+    #  gevraagd, en als laatste wordt de tijdstempel van het allerlaatste
+    #  videopakket opgevraagd - dat werkt ook bij een container die zijn
+    #  duur helemaal niet opschrijft, maar kost een keer doorlezen.
+    # -----------------------------------------------------------------
+    function Get-DurationSec {
+        param([string]$FilePath)
+
+        function ParseDur {
+            param([string]$Tekst)
+            if ([string]::IsNullOrWhiteSpace($Tekst)) { return 0.0 }
+            $t = $Tekst.Trim()
+            if ($t -eq 'N/A') { return 0.0 }
+            $d = 0.0
+            $ok = [double]::TryParse($t,
+                    [Globalization.NumberStyles]::Float,
+                    [Globalization.CultureInfo]::InvariantCulture, [ref]$d)
+            if ($ok -and $d -gt 0) { return $d }
+            return 0.0
+        }
+
+        try {
+            $r = (& $sync.Ffprobe -v error -show_entries format=duration `
+                    -of default=nw=1:nk=1 $FilePath 2>$null) -join ' '
+            $d = ParseDur $r
+            if ($d -gt 0) { return $d }
+        } catch { }
+
+        try {
+            $r = (& $sync.Ffprobe -v error -select_streams v:0 -show_entries stream=duration `
+                    -of default=nw=1:nk=1 $FilePath 2>$null) -join ' '
+            $d = ParseDur $r
+            if ($d -gt 0) { return $d }
+        } catch { }
+
+        # Laatste redmiddel: de tijdstempel van het laatste videopakket.
+        # -read_intervals springt naar het eind, dus dit is niet het hele
+        # bestand doorlezen.
+        try {
+            $r = (& $sync.Ffprobe -v error -select_streams v:0 -show_entries packet=pts_time `
+                    -of csv=p=0 -read_intervals '999999%+#1' $FilePath 2>$null)
+            $laatste = 0.0
+            foreach ($regel in @($r)) {
+                $d = ParseDur ([string]$regel)
+                if ($d -gt $laatste) { $laatste = $d }
+            }
+            if ($laatste -gt 0) { return $laatste }
+        } catch { }
+
+        return 0.0
+    }
+
+    # -----------------------------------------------------------------
+    #  Is dit bestand al een keer omgezet?
+    #
+    #  De bron hoort na een geslaagde omzetting te verdwijnen, en daarop
+    #  leunt het overslaan bij twee pc's. Maar verwijderen kan mislukken -
+    #  het bestand is nog in gebruik, de share weigert het - en dan blijft
+    #  de bron liggen met het resultaat ernaast ('x265 aangemaakt,
+    #  origineel NIET verwijderd'). De andere pc ziet dan een gewoon
+    #  h264-bestand en begint vrolijk opnieuw, met een '(2)' als resultaat.
+    #
+    #  Vandaar deze controle: ligt er al een uitvoerbestand naast dat ook
+    #  echt HEVC is, dan is het werk al gedaan.
+    # -----------------------------------------------------------------
+    function Test-AlOmgezet {
+        param([string]$SourcePath, [string]$FixedOut = '')
+
+        $kandidaat = ''
+        if (-not [string]::IsNullOrWhiteSpace($FixedOut)) {
+            $kandidaat = $FixedOut
+        }
+        else {
+            try {
+                $dir  = [IO.Path]::GetDirectoryName($SourcePath)
+                $base = Get-CleanBase ([IO.Path]::GetFileNameWithoutExtension($SourcePath))
+                $kandidaat = Join-Path $dir ($base + '.x265.mkv')
+            }
+            catch { return '' }
+        }
+
+        if ([string]::IsNullOrWhiteSpace($kandidaat)) { return '' }
+        try { if (-not [System.IO.File]::Exists($kandidaat)) { return '' } } catch { return '' }
+
+        $lengte = 0
+        try { $lengte = (Get-Item -LiteralPath $kandidaat -ErrorAction Stop).Length } catch { return '' }
+        if ($lengte -le 0) { return '' }
+
+        # Bestaan is niet genoeg: een half afgebroken bestand van een
+        # eerdere poging mag de bron niet voor altijd blokkeren.
+        $codec = ''
+        try {
+            $codec = (& $sync.Ffprobe -v error -select_streams v:0 `
+                        -show_entries stream=codec_name -of default=nw=1:nk=1 $kandidaat 2>$null) -join ''
+        }
+        catch { return '' }
+        if (([string]$codec).Trim() -match '(?i)^(hevc|h265|x265)$') { return $kandidaat }
+        return ''
+    }
+
     # -----------------------------------------------------------------
     #  Aantal audiokanalen van de bron
     #
@@ -1103,9 +1206,15 @@ $ConvertWorker = {
         }
 
         try {
+            # Delete MOET erbij. Zonder dat kan de ANDERE pc het origineel
+            # niet weggooien zolang wij het aan het kopieren zijn - en dan
+            # blijft daar 'x265 aangemaakt, origineel NIET verwijderd'
+            # staan, blijft de bron liggen, en pakt de volgende ronde hem
+            # gewoon opnieuw op. Met Delete erbij wacht Windows netjes tot
+            # onze kopie klaar is en gooit het bestand dan alsnog weg.
             $res.In  = [System.IO.File]::Open($bron, [System.IO.FileMode]::Open,
                                               [System.IO.FileAccess]::Read,
-                                              [System.IO.FileShare]::ReadWrite)
+                                              ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))
             $res.Out = [System.IO.File]::Create($doel)
             $res.Task = $res.In.CopyToAsync($res.Out, 1048576)
         }
@@ -1462,6 +1571,18 @@ $ConvertWorker = {
                 continue
             }
 
+            # ---- is dit bestand al omgezet? -------------------------
+            $alKlaar = Test-AlOmgezet -SourcePath ([string]$job.FullPath) -FixedOut ([string]$job.OutPath)
+            if ($alKlaar) {
+                $job.Status     = 'Al omgezet'
+                $job.ResultText = 'Er staat al een HEVC-uitvoer naast de bron: ' + [IO.Path]::GetFileName($alKlaar)
+                $job.Queued     = $false
+                $job.QueueText  = ''
+                W ("Overgeslagen, er staat al een omgezet bestand naast de bron: {0}" -f $alKlaar) 'WAARS'
+                W 'Het origineel is blijkbaar niet opgeruimd na een eerdere omzetting. Verwijder het zelf, of hernoem de uitvoer als je het toch opnieuw wilt doen.' 'WAARS'
+                continue
+            }
+
             # ---- is een andere pc er al mee bezig? ------------------
             $lock = $null
             if ($lockAan) {
@@ -1475,6 +1596,14 @@ $ConvertWorker = {
                     $script:HuidigLock = $lock
                 }
                 elseif ($poging.Busy) {
+                    # Hadden we dit bestand al vooruit staan halen, dan die
+                    # kopie nu meteen afbreken. Niet alleen om de ruimte:
+                    # zolang wij de bron open hebben staan, komt de andere
+                    # pc er straks niet bij om hem weg te gooien.
+                    if ($pre -ne $null -and $pre.Job -eq $job) {
+                        Stop-Prefetch $pre
+                        $pre = $null
+                    }
                     $job.Status     = 'Andere pc bezig'
                     $job.ResultText = $(if ($poging.Owner) { "In gebruik door $($poging.Owner)" } else { 'In gebruik door een andere pc' })
                     $job.Queued     = $false
@@ -1563,6 +1692,28 @@ $ConvertWorker = {
             if ($pre -eq $null -and -not $sync.StopAfterCurrent) {
                 $volgende = Peek-NextJob
                 if ($volgende -ne $null) { $pre = Start-Prefetch $volgende }
+            }
+
+            # ---- duur alsnog bepalen als die onbekend is -------------
+            #
+            #  Zonder totale speelduur is er geen percentage te berekenen
+            #  en blijft de voortgangsbalk dood op nul staan, terwijl er
+            #  wel degelijk wordt gewerkt. De scan kan hem missen: niet
+            #  elke container heeft de duur in de kop, en over een trage
+            #  share geeft ffprobe soms op. Hier is het een tweede kans
+            #  waard - en als de bron inmiddels lokaal staat is het zelfs
+            #  gratis, want dan hoeft er niets meer over het netwerk.
+            if ([double]$job.DurationSec -le 0) {
+                $alsnog = Get-DurationSec $readPath
+                if ($alsnog -gt 0) {
+                    $job.DurationSec     = $alsnog
+                    $job.DurationText    = Format-Clock $alsnog
+                    $sync.CurDurationSec = $alsnog
+                    W ("Speelduur was onbekend; alsnog bepaald op {0}." -f (Format-Clock $alsnog))
+                }
+                else {
+                    W 'De speelduur van dit bestand is niet te bepalen; de voortgangsbalk kan geen percentage tonen.' 'WAARS'
+                }
             }
 
             $origLastWrite = $null

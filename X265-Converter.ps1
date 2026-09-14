@@ -57,7 +57,7 @@ param(
 #  LEESMIJ-X265-Converter.md.
 # ---------------------------------------------------------------------
 $AppName    = 'X265 Converter'
-$AppVersion = '1.3'
+$AppVersion = '1.5'
 $AppDate    = '2026-09-14'
 $AppTitle   = 'Video naar H.265 / HEVC'
 $AppStamp   = ('{0} {1} ({2})' -f $AppName, $AppVersion, $AppDate)
@@ -2567,6 +2567,109 @@ $ConvertWorker = {
     }
 
     # -----------------------------------------------------------------
+    #  Speelduur van een bestand
+    #
+    #  Drie manieren, van goedkoop naar duur. De eerste is wat de scan
+    #  ook doet. Geeft die niets, dan wordt er zonder -select_streams
+    #  gevraagd, en als laatste wordt de tijdstempel van het allerlaatste
+    #  videopakket opgevraagd - dat werkt ook bij een container die zijn
+    #  duur helemaal niet opschrijft, maar kost een keer doorlezen.
+    # -----------------------------------------------------------------
+    function Get-DurationSec {
+        param([string]$FilePath)
+
+        function ParseDur {
+            param([string]$Tekst)
+            if ([string]::IsNullOrWhiteSpace($Tekst)) { return 0.0 }
+            $t = $Tekst.Trim()
+            if ($t -eq 'N/A') { return 0.0 }
+            $d = 0.0
+            $ok = [double]::TryParse($t,
+                    [Globalization.NumberStyles]::Float,
+                    [Globalization.CultureInfo]::InvariantCulture, [ref]$d)
+            if ($ok -and $d -gt 0) { return $d }
+            return 0.0
+        }
+
+        try {
+            $r = (& $sync.Ffprobe -v error -show_entries format=duration `
+                    -of default=nw=1:nk=1 $FilePath 2>$null) -join ' '
+            $d = ParseDur $r
+            if ($d -gt 0) { return $d }
+        } catch { }
+
+        try {
+            $r = (& $sync.Ffprobe -v error -select_streams v:0 -show_entries stream=duration `
+                    -of default=nw=1:nk=1 $FilePath 2>$null) -join ' '
+            $d = ParseDur $r
+            if ($d -gt 0) { return $d }
+        } catch { }
+
+        # Laatste redmiddel: de tijdstempel van het laatste videopakket.
+        # -read_intervals springt naar het eind, dus dit is niet het hele
+        # bestand doorlezen.
+        try {
+            $r = (& $sync.Ffprobe -v error -select_streams v:0 -show_entries packet=pts_time `
+                    -of csv=p=0 -read_intervals '999999%+#1' $FilePath 2>$null)
+            $laatste = 0.0
+            foreach ($regel in @($r)) {
+                $d = ParseDur ([string]$regel)
+                if ($d -gt $laatste) { $laatste = $d }
+            }
+            if ($laatste -gt 0) { return $laatste }
+        } catch { }
+
+        return 0.0
+    }
+
+    # -----------------------------------------------------------------
+    #  Is dit bestand al een keer omgezet?
+    #
+    #  De bron hoort na een geslaagde omzetting te verdwijnen, en daarop
+    #  leunt het overslaan bij twee pc's. Maar verwijderen kan mislukken -
+    #  het bestand is nog in gebruik, de share weigert het - en dan blijft
+    #  de bron liggen met het resultaat ernaast ('x265 aangemaakt,
+    #  origineel NIET verwijderd'). De andere pc ziet dan een gewoon
+    #  h264-bestand en begint vrolijk opnieuw, met een '(2)' als resultaat.
+    #
+    #  Vandaar deze controle: ligt er al een uitvoerbestand naast dat ook
+    #  echt HEVC is, dan is het werk al gedaan.
+    # -----------------------------------------------------------------
+    function Test-AlOmgezet {
+        param([string]$SourcePath, [string]$FixedOut = '')
+
+        $kandidaat = ''
+        if (-not [string]::IsNullOrWhiteSpace($FixedOut)) {
+            $kandidaat = $FixedOut
+        }
+        else {
+            try {
+                $dir  = [IO.Path]::GetDirectoryName($SourcePath)
+                $base = Get-CleanBase ([IO.Path]::GetFileNameWithoutExtension($SourcePath))
+                $kandidaat = Join-Path $dir ($base + '.x265.mkv')
+            }
+            catch { return '' }
+        }
+
+        if ([string]::IsNullOrWhiteSpace($kandidaat)) { return '' }
+        try { if (-not [System.IO.File]::Exists($kandidaat)) { return '' } } catch { return '' }
+
+        $lengte = 0
+        try { $lengte = (Get-Item -LiteralPath $kandidaat -ErrorAction Stop).Length } catch { return '' }
+        if ($lengte -le 0) { return '' }
+
+        # Bestaan is niet genoeg: een half afgebroken bestand van een
+        # eerdere poging mag de bron niet voor altijd blokkeren.
+        $codec = ''
+        try {
+            $codec = (& $sync.Ffprobe -v error -select_streams v:0 `
+                        -show_entries stream=codec_name -of default=nw=1:nk=1 $kandidaat 2>$null) -join ''
+        }
+        catch { return '' }
+        if (([string]$codec).Trim() -match '(?i)^(hevc|h265|x265)$') { return $kandidaat }
+        return ''
+    }
+
     # -----------------------------------------------------------------
     #  Aantal audiokanalen van de bron
     #
@@ -3414,9 +3517,15 @@ $ConvertWorker = {
         }
 
         try {
+            # Delete MOET erbij. Zonder dat kan de ANDERE pc het origineel
+            # niet weggooien zolang wij het aan het kopieren zijn - en dan
+            # blijft daar 'x265 aangemaakt, origineel NIET verwijderd'
+            # staan, blijft de bron liggen, en pakt de volgende ronde hem
+            # gewoon opnieuw op. Met Delete erbij wacht Windows netjes tot
+            # onze kopie klaar is en gooit het bestand dan alsnog weg.
             $res.In  = [System.IO.File]::Open($bron, [System.IO.FileMode]::Open,
                                               [System.IO.FileAccess]::Read,
-                                              [System.IO.FileShare]::ReadWrite)
+                                              ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))
             $res.Out = [System.IO.File]::Create($doel)
             $res.Task = $res.In.CopyToAsync($res.Out, 1048576)
         }
@@ -3773,6 +3882,18 @@ $ConvertWorker = {
                 continue
             }
 
+            # ---- is dit bestand al omgezet? -------------------------
+            $alKlaar = Test-AlOmgezet -SourcePath ([string]$job.FullPath) -FixedOut ([string]$job.OutPath)
+            if ($alKlaar) {
+                $job.Status     = 'Al omgezet'
+                $job.ResultText = 'Er staat al een HEVC-uitvoer naast de bron: ' + [IO.Path]::GetFileName($alKlaar)
+                $job.Queued     = $false
+                $job.QueueText  = ''
+                W ("Overgeslagen, er staat al een omgezet bestand naast de bron: {0}" -f $alKlaar) 'WAARS'
+                W 'Het origineel is blijkbaar niet opgeruimd na een eerdere omzetting. Verwijder het zelf, of hernoem de uitvoer als je het toch opnieuw wilt doen.' 'WAARS'
+                continue
+            }
+
             # ---- is een andere pc er al mee bezig? ------------------
             $lock = $null
             if ($lockAan) {
@@ -3786,6 +3907,14 @@ $ConvertWorker = {
                     $script:HuidigLock = $lock
                 }
                 elseif ($poging.Busy) {
+                    # Hadden we dit bestand al vooruit staan halen, dan die
+                    # kopie nu meteen afbreken. Niet alleen om de ruimte:
+                    # zolang wij de bron open hebben staan, komt de andere
+                    # pc er straks niet bij om hem weg te gooien.
+                    if ($pre -ne $null -and $pre.Job -eq $job) {
+                        Stop-Prefetch $pre
+                        $pre = $null
+                    }
                     $job.Status     = 'Andere pc bezig'
                     $job.ResultText = $(if ($poging.Owner) { "In gebruik door $($poging.Owner)" } else { 'In gebruik door een andere pc' })
                     $job.Queued     = $false
@@ -3874,6 +4003,28 @@ $ConvertWorker = {
             if ($pre -eq $null -and -not $sync.StopAfterCurrent) {
                 $volgende = Peek-NextJob
                 if ($volgende -ne $null) { $pre = Start-Prefetch $volgende }
+            }
+
+            # ---- duur alsnog bepalen als die onbekend is -------------
+            #
+            #  Zonder totale speelduur is er geen percentage te berekenen
+            #  en blijft de voortgangsbalk dood op nul staan, terwijl er
+            #  wel degelijk wordt gewerkt. De scan kan hem missen: niet
+            #  elke container heeft de duur in de kop, en over een trage
+            #  share geeft ffprobe soms op. Hier is het een tweede kans
+            #  waard - en als de bron inmiddels lokaal staat is het zelfs
+            #  gratis, want dan hoeft er niets meer over het netwerk.
+            if ([double]$job.DurationSec -le 0) {
+                $alsnog = Get-DurationSec $readPath
+                if ($alsnog -gt 0) {
+                    $job.DurationSec     = $alsnog
+                    $job.DurationText    = Format-Clock $alsnog
+                    $sync.CurDurationSec = $alsnog
+                    W ("Speelduur was onbekend; alsnog bepaald op {0}." -f (Format-Clock $alsnog))
+                }
+                else {
+                    W 'De speelduur van dit bestand is niet te bepalen; de voortgangsbalk kan geen percentage tonen.' 'WAARS'
+                }
             }
 
             $origLastWrite = $null
@@ -5049,6 +5200,7 @@ $ui.txtSubTitle.Text = "Batch converter   -   scriptmap: $ScriptDir"
 # ---------------------------------------------------------------------
 
 $script:EtaRate      = 0.0
+$script:EtaFiles     = 0.0
 $script:EtaLastCalc  = $null
 $script:EtaStamp     = ''
 $script:LogLines     = 0
@@ -6004,6 +6156,7 @@ $ui.btnStart.Add_Click({
     while ($sync.EmergencyFiles.TryDequeue([ref]$dump)) { }
 
     $script:EtaRate     = 0.0
+    $script:EtaFiles    = 0.0
     $script:EtaLastCalc = $null
     $script:EtaStamp    = ''
     $script:ExitPending = $false
@@ -6273,6 +6426,7 @@ function Invoke-Tick {
             }
             $ui.txtCurrentFile.Text = [string]$sync.ScanStatus
             $ui.txtCurrentInfo.Text = ''
+            $ui.pbCurrent.IsIndeterminate = $false
             $ui.pbCurrent.Value     = 0
             Set-Status "$wat…  video's: $($sync.ScanFound)   al HEVC: $($sync.ScanSkippedHevc)   onbruikbaar: $($sync.ScanSkippedNoVid)"
         }
@@ -6299,23 +6453,36 @@ function Invoke-Tick {
     $doneWork  = [double]$sync.DoneVideoSec + [double]$sync.CurVideoSec
     $totalWork = $doneWork + $remainSec
 
+    $inQueue = $sync.Queue.Count
+    $busyOne = 0
+    if ($sync.CurrentJob -ne $null) { $busyOne = 1 }
+
+    # Is de speelduur bruikbaar? Kan ffprobe de duur van de bronnen niet
+    # geven, dan is de optelling van de wachtrij nul en zou 'nog te doen'
+    # nul zijn - met een volle balk terwijl er nog honderden bestanden
+    # wachten, en een tijdsindicatie van niks. Dan liever tellen op AANTAL
+    # BESTANDEN: grover, maar het klopt tenminste.
+    $duurBruikbaar = (($qSec -gt 0) -or ($inQueue -eq 0)) -and ($totalWork -gt 0)
+
     if ($convBusy) {
 
         $ui.pbOverall.IsIndeterminate = $false
         $ui.txtOverallLabel.Text = 'Totale voortgang'
 
-        if ($totalWork -gt 0) {
+        if ($duurBruikbaar) {
             $p = 100.0 * $doneWork / $totalWork
             if ($p -gt 100) { $p = 100 }
             $ui.pbOverall.Value = $p
-        } else {
-            $ui.pbOverall.Value = 0
+            $ui.txtOverallInfo.Text = ("{0} klaar  -  {1} in wachtrij  -  {2:N1} %" -f $sync.JobsDone, $inQueue, $p)
         }
-
-        $inQueue = $sync.Queue.Count
-        $busyOne = 0
-        if ($sync.CurrentJob -ne $null) { $busyOne = 1 }
-        $ui.txtOverallInfo.Text = ("{0} klaar  -  {1} in wachtrij  -  {2:N1} %" -f $sync.JobsDone, $inQueue, $ui.pbOverall.Value)
+        else {
+            $alle = $sync.JobsDone + $inQueue + $busyOne
+            $p = 0.0
+            if ($alle -gt 0) { $p = 100.0 * $sync.JobsDone / $alle }
+            $ui.pbOverall.Value = $p
+            $ui.txtOverallInfo.Text = ("{0} klaar  -  {1} in wachtrij  -  {2:N1} %  (op aantal bestanden; speelduur onbekend)" -f `
+                $sync.JobsDone, $inQueue, $p)
+        }
 
         $phase = [string]$sync.CurPhase
         $pre   = ''
@@ -6326,12 +6493,26 @@ function Invoke-Tick {
         if ($sync.CurFile) { $ui.txtCurrentFile.Text = "$pre$phase : $($sync.CurFile)" }
         else               { $ui.txtCurrentFile.Text = "$pre$phase" }
 
-        $ui.pbCurrent.Value = [double]$sync.CurPhasePct
+        # Geen bekende speelduur betekent geen percentage: dat wordt
+        # berekend als bereikte seconde gedeeld door totale duur. De balk
+        # zou dan de hele conversie dood op nul blijven staan terwijl er
+        # wel degelijk wordt gewerkt. In dat geval laten we hem heen en
+        # weer lopen en tonen we hoeveel speeltijd er al door de encoder
+        # is gegaan.
+        $duurOnbekend = (($phase -eq 'Encoderen') -and ([double]$sync.CurDurationSec -le 0))
+        if ($ui.pbCurrent.IsIndeterminate -ne $duurOnbekend) { $ui.pbCurrent.IsIndeterminate = $duurOnbekend }
+        if (-not $duurOnbekend) { $ui.pbCurrent.Value = [double]$sync.CurPhasePct }
 
         $bits = New-Object System.Collections.ArrayList
-        [void]$bits.Add(('{0:N1} %' -f [double]$sync.CurPhasePct))
-        if ($sync.CurDurationSec -gt 0 -and $phase -eq 'Encoderen') {
-            [void]$bits.Add((Format-Clock ([double]$sync.CurVideoSec)) + ' / ' + (Format-Clock ([double]$sync.CurDurationSec)))
+        if ($duurOnbekend) {
+            [void]$bits.Add((Format-Clock ([double]$sync.CurVideoSec)) + ' verwerkt')
+            [void]$bits.Add('speelduur onbekend')
+        }
+        else {
+            [void]$bits.Add(('{0:N1} %' -f [double]$sync.CurPhasePct))
+            if ($sync.CurDurationSec -gt 0 -and $phase -eq 'Encoderen') {
+                [void]$bits.Add((Format-Clock ([double]$sync.CurVideoSec)) + ' / ' + (Format-Clock ([double]$sync.CurDurationSec)))
+            }
         }
         if ($sync.CurSpeed)          { [void]$bits.Add('snelheid ' + $sync.CurSpeed) }
         if ($sync.CurFps)            { [void]$bits.Add($sync.CurFps + ' fps') }
@@ -6354,13 +6535,47 @@ function Invoke-Tick {
             }
         }
 
-        if ($doRecalc -and $doneWork -gt 0 -and $active -gt 0) {
+        # Zonder bruikbare speelduur kan er niet op speeltijd worden
+        # gerekend. Dan maar op ervaring: hoeveel wandkloktijd kostte een
+        # bestand gemiddeld, maal wat er nog ligt. Dat kan pas zodra er een
+        # bestand af is.
+        if (-not $duurBruikbaar) {
+            if ($sync.JobsDone -gt 0 -and $active -gt 0) {
+                $perFile = $active / [double]$sync.JobsDone
+                $script:EtaRate  = -1                      # vlag: tellen op bestanden
+                $script:EtaFiles = $perFile * ($inQueue + $busyOne)
+                if ($script:EtaLastCalc -eq $null -or
+                    ((Get-Date) - $script:EtaLastCalc).TotalSeconds -ge $interval) {
+                    $script:EtaLastCalc = Get-Date
+                    $script:EtaStamp    = (Get-Date -Format 'HH:mm:ss')
+                }
+            }
+            else { $script:EtaRate = 0; $script:EtaFiles = 0 }
+        }
+        elseif ($doRecalc -and $doneWork -gt 0 -and $active -gt 0) {
             $script:EtaRate     = $doneWork / $active
             $script:EtaLastCalc = Get-Date
             $script:EtaStamp    = (Get-Date -Format 'HH:mm:ss')
         }
 
-        if ($script:EtaRate -gt 0) {
+        if (-not $duurBruikbaar) {
+            if ($script:EtaFiles -gt 0) {
+                $remain = [double]$script:EtaFiles
+                $ui.stEta.Text = Format-Span $remain
+                if ($sync.IsPaused) { $ui.stEtaClock.Text = 'gepauzeerd' }
+                else {
+                    $done = (Get-Date).AddSeconds($remain)
+                    if ($done.Date -eq (Get-Date).Date) { $ui.stEtaClock.Text = $done.ToString('HH:mm') }
+                    else { $ui.stEtaClock.Text = $done.ToString('ddd HH:mm') }
+                }
+                $ui.txtStatus2.Text = "tijdsindicatie op aantal bestanden, bijgewerkt $($script:EtaStamp)"
+            }
+            else {
+                $ui.stEta.Text      = 'berekenen…'
+                $ui.stEtaClock.Text = '--:--'
+            }
+        }
+        elseif ($script:EtaRate -gt 0) {
             $remain = $remainSec / $script:EtaRate
             $ui.stEta.Text = Format-Span $remain
             if ($sync.IsPaused) {
@@ -6376,7 +6591,11 @@ function Invoke-Tick {
             $ui.stEtaClock.Text = '--:--'
         }
 
-        if ($active -gt 0 -and $doneWork -gt 0) {
+        # Gemiddelde encode-snelheid is speeltijd gedeeld door rekentijd.
+        # Zonder bekende speelduur is dat een verzonnen getal; dan liever
+        # een streepje dan een cijfer waar iemand op gaat rekenen.
+        if (-not $duurBruikbaar) { $ui.stSpeed.Text = '-' }
+        elseif ($active -gt 0 -and $doneWork -gt 0) {
             $ui.stSpeed.Text = ('{0:N2}x' -f ($doneWork / $active))
         }
 
@@ -6494,6 +6713,7 @@ function Invoke-Tick {
                 $ui.txtOverallInfo.Text = ''
                 $ui.txtCurrentFile.Text = 'Geen actieve conversie'
                 $ui.txtCurrentInfo.Text = ''
+                $ui.pbCurrent.IsIndeterminate = $false
                 $ui.pbCurrent.Value     = 0
                 Set-Status $txt
                 Set-Title 'Batch Converter'
@@ -6528,6 +6748,7 @@ function Invoke-Tick {
         Sync-QueueOrder
 
         $ui.pbOverall.IsIndeterminate = $false
+        $ui.pbCurrent.IsIndeterminate = $false
         $ui.pbCurrent.Value     = 0
         $ui.txtCurrentFile.Text = 'Geen actieve conversie'
         $ui.txtCurrentInfo.Text = ''

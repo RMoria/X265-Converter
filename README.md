@@ -3,7 +3,7 @@
 Video naar H.265 / HEVC omzetten op Windows, met een grafische interface.
 Eén PowerShell-script plus een starter; verder alleen ffmpeg.
 
-**Versie 1.3** — [wat er per versie is veranderd](LEESMIJ-X265-Converter.md#wat-er-per-versie-is-veranderd)
+**Versie 1.5** — [wat er per versie is veranderd](LEESMIJ-X265-Converter.md#wat-er-per-versie-is-veranderd)
 
 ![PowerShell 5.1](https://img.shields.io/badge/PowerShell-5.1-blue)
 ![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-blue)
@@ -32,6 +32,10 @@ is gaan zitten:
 - **Sporen worden vooraf uitgezocht.** Timecode- en datastromen kan MKV
   niet opslaan, mov_text-ondertitels moeten naar srt, en een
   omslagafbeelding hoeft niet door de encoder.
+- **Het programma werkt zichzelf bij** vanaf de laatste release-tag: via git
+  als dat er is, anders gewoon met een download. Voordat er iets wordt
+  vervangen wordt gecontroleerd of het opgehaalde script als geldig PowerShell
+  parseert, en de vorige versie blijft ernaast staan.
 - **Twee computers kunnen op dezelfde map werken.** Voor elk bestand komt er
   een lock-bestandje naast te staan, aangemaakt met "alleen als het nog niet
   bestaat" — één handeling aan de serverkant, dus zonder gat waarin de tweede
@@ -72,6 +76,7 @@ Getest met ffmpeg 9.0.1 en Windows PowerShell 5.1.
 | `X265-Converter.ps1` | het programma |
 | `X265-Converter.cmd` | de starter waar je op dubbelklikt |
 | `LEESMIJ-X265-Converter.md` | de volledige handleiding |
+| `Bijwerken.ps1` | haalt bij het starten de nieuwste uitgebrachte versie op |
 | `tools/` | losse hulpscripts: één bestand doormeten, een map nakijken op geluidsgaten, VCP-markeringen weghalen |
 | `src/` | de acht onderdelen waaruit het script wordt samengesteld |
 | `build/` | samenstellen en controleren |
