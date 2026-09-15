@@ -1,9 +1,9 @@
-. /tmp/build/testlib.ps1
+. (Join-Path $PSScriptRoot 'testlib.ps1')
 $ok=0;$bad=0
 function Check { param([string]$W,[bool]$C,[string]$E='') if($C){$script:ok++;"  OK    $W $E"}else{$script:bad++;"  FOUT  $W $E"} }
 function Fresh { param($D) if(Test-Path $D){Remove-Item -Recurse -Force $D}; New-Item -ItemType Directory -Path $D -Force|Out-Null }
 function MkVid { param($P,[int]$Sec=5,[string]$V='libx264')
-  & /usr/bin/ffmpeg -hide_banner -loglevel error -y -f lavfi -i "testsrc=size=320x240:rate=25:duration=$Sec" `
+  & $FFMPEG -hide_banner -loglevel error -y -f lavfi -i "testsrc=size=320x240:rate=25:duration=$Sec" `
     -f lavfi -i "sine=duration=$Sec" -map 0:v -map 1:a -c:v $V -preset ultrafast -crf 36 -c:a aac $P 2>$null | Out-Null }
 
 # De lock-functies staan in $HelperText en zijn hier via testlib al geladen.
@@ -355,7 +355,7 @@ Check 'geen lock achtergebleven'    ((@(Get-ChildItem '/tmp/lk7' -Filter '*.x265
 # opnieuw - met een '(2)' als resultaat.
 Fresh '/tmp/lk8'
 MkVid '/tmp/lk8/blijven staan.mkv' 5
-& /usr/bin/ffmpeg -hide_banner -loglevel error -y -i '/tmp/lk8/blijven staan.mkv' `
+& $FFMPEG -hide_banner -loglevel error -y -i '/tmp/lk8/blijven staan.mkv' `
     -c:v libx265 -preset ultrafast -crf 40 -c:a copy '/tmp/lk8/blijven staan.x265.mkv' 2>$null | Out-Null
 Check 'uitvoer staat er al'         (Test-Path '/tmp/lk8/blijven staan.x265.mkv')
 

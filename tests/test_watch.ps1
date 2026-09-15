@@ -1,9 +1,9 @@
-. /tmp/build/testlib.ps1
+. (Join-Path $PSScriptRoot 'testlib.ps1')
 $ok=0;$bad=0
 function Check { param([string]$W,[bool]$C,[string]$E='') if($C){$script:ok++;"  OK    $W $E"}else{$script:bad++;"  FOUT  $W $E"} }
 function Fresh { param($D) if(Test-Path $D){Remove-Item -Recurse -Force $D}; New-Item -ItemType Directory -Path $D -Force|Out-Null }
 function MkVid { param($P,[int]$Sec=4,[string]$V='libx264')
-  & /usr/bin/ffmpeg -hide_banner -loglevel error -y -f lavfi -i "testsrc=size=320x240:rate=25:duration=$Sec" `
+  & $FFMPEG -hide_banner -loglevel error -y -f lavfi -i "testsrc=size=320x240:rate=25:duration=$Sec" `
     -f lavfi -i "sine=duration=$Sec" -map 0:v -map 1:a -c:v $V -preset ultrafast -crf 36 -c:a aac $P 2>$null | Out-Null }
 function RunScan {
   param($Settings)
@@ -82,8 +82,8 @@ Check 'zonder locks weer op false' (-not $sync.LockGezien)
 ''
 
 '--- 4. de nascan gebeurt precies een keer ---'
-$p7 = Get-Content -Raw /tmp/build/part7.ps1
-$p8 = Get-Content -Raw /tmp/build/part8.ps1
+$p7 = Get-Content -Raw $SrcDir/part7.ps1
+$p8 = Get-Content -Raw $SrcDir/part8.ps1
 Check 'nascan heeft een geheugen'  ($p7 -match '\$script:NascanGedaan = \$false')
 Check 'en slaat over als het al is geweest' ($p7 -match 'if \(\$script:NascanGedaan\) \{ return \$false \}')
 Check 'zet de vlag voor het starten'        ($p7 -match '\$script:NascanGedaan  = \$true')
@@ -100,15 +100,15 @@ Check 'afsluiten wacht op de nascan' ($p8 -match '-not \$nascan -and \[bool\]\$u
 ''
 
 '--- 6. elk uur kijken ---'
-Check 'vinkje bestaat'             ((Get-Content -Raw /tmp/build/part3.ps1) -match 'x:Name="chkWatch"')
-Check 'standaard uit'              ((Get-Content -Raw /tmp/build/part3.ps1) -match 'x:Name="chkWatch"[^>]*IsChecked="False"')
+Check 'vinkje bestaat'             ((Get-Content -Raw $SrcDir/part3.ps1) -match 'x:Name="chkWatch"')
+Check 'standaard uit'              ((Get-Content -Raw $SrcDir/part3.ps1) -match 'x:Name="chkWatch"[^>]*IsChecked="False"')
 Check 'klok in de tik'             ($p8 -match '\$script:WatchVanaf')
 Check 'alleen als er niets loopt'  ($p8 -match '\$sync\.ScanBusy -or \$sync\.ConvBusy -or \$sync\.Queue\.Count -gt 0')
 Check 'en de wachtrij leeg is'     ($p7 -match '(?s)function Start-WatchScan.{0,300}\$sync\.Queue\.Count -gt 0.*?return \$false')
 Check 'zonder pop-up'              ($p7 -notmatch '(?s)function Start-WatchScan.{0,1600}MessageBox')
 Check 'zet meteen in de wachtrij'  ($p7 -match '(?s)function Start-WatchScan.{0,900}Get-ScanSettings -AutoQueue \$true')
-Check 'wordt bewaard'              ((Get-Content -Raw /tmp/build/part6.ps1) -match 'WatchFolders  = \[bool\]\$ui\.chkWatch\.IsChecked')
-Check 'en teruggezet'              ((Get-Content -Raw /tmp/build/part6.ps1) -match '\$ui\.chkWatch\.IsChecked      = \[bool\]\$saved\.WatchFolders')
+Check 'wordt bewaard'              ((Get-Content -Raw $SrcDir/part6.ps1) -match 'WatchFolders  = \[bool\]\$ui\.chkWatch\.IsChecked')
+Check 'en teruggezet'              ((Get-Content -Raw $SrcDir/part6.ps1) -match '\$ui\.chkWatch\.IsChecked      = \[bool\]\$saved\.WatchFolders')
 ''
 
 '--- 7. kijken en afsluiten sluiten elkaar uit ---'

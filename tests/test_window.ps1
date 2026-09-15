@@ -1,7 +1,15 @@
+# Zelfstandig: deze test laadt testlib niet, dus de paden hier uitzoeken.
+$TestDir = $PSScriptRoot
+if (-not $TestDir) { $TestDir = Split-Path -Parent $MyInvocation.MyCommand.Path }
+$SrcDir = Join-Path (Split-Path -Parent $TestDir) 'src'
+if (-not (Test-Path (Join-Path $SrcDir 'part2.ps1'))) { $SrcDir = $TestDir }
+$AppScript = Join-Path (Split-Path -Parent $TestDir) 'X265-Converter.ps1'
+if (-not (Test-Path $AppScript)) { $AppScript = Join-Path $TestDir 'X265-Converter.ps1' }
+
 # De ECHTE Restore-WindowPlacement uit part7, met alleen de vier
 # SystemParameters-regels vervangen door instelbare waarden en $win door
 # een nepobject. Zo wordt de echte rekenlogica getoetst en geen kopie.
-$bron = Get-Content -Raw (Join-Path (Split-Path -Parent $PSScriptRoot) 'src/part7.ps1')
+$bron = Get-Content -Raw $SrcDir/part7.ps1
 $m = [regex]::Match($bron, '(?s)function Restore-WindowPlacement \{.*?\n\}\r?\n')
 if (-not $m.Success) { 'FUNCTIE NIET GEVONDEN'; exit 1 }
 $code = $m.Value

@@ -1,5 +1,30 @@
-# Gedeelde opzet voor de tests in deze container.
+# Gedeelde opzet voor de tests.
+#
+# Alles wordt hier uitgezocht vanaf de map waarin dit bestand staat, zodat
+# de tests werken vanuit een verse clone (tests/ naast src/) EN vanuit een
+# platte werkmap waarin alle bestanden door elkaar staan.
 $ErrorActionPreference = 'Stop'
+
+$TestDir = $PSScriptRoot
+if (-not $TestDir) { $TestDir = Split-Path -Parent $MyInvocation.MyCommand.Path }
+
+# bronbestanden: eerst ../src, anders naast de tests
+$SrcDir = Join-Path (Split-Path -Parent $TestDir) 'src'
+if (-not (Test-Path (Join-Path $SrcDir 'part2.ps1'))) { $SrcDir = $TestDir }
+
+# het samengestelde script: eerst de map boven tests, anders naast de tests
+$AppScript = Join-Path (Split-Path -Parent $TestDir) 'X265-Converter.ps1'
+if (-not (Test-Path $AppScript)) { $AppScript = Join-Path $TestDir 'X265-Converter.ps1' }
+
+# ffmpeg van het PATH, met de gebruikelijke plek als terugval
+$FFMPEG  = (Get-Command ffmpeg  -ErrorAction SilentlyContinue).Source
+$FFPROBE = (Get-Command ffprobe -ErrorAction SilentlyContinue).Source
+if (-not $FFMPEG)  { $FFMPEG  = '/usr/bin/ffmpeg' }
+if (-not $FFPROBE) { $FFPROBE = '/usr/bin/ffprobe' }
+
+# werkmap voor testbestanden
+$WorkRoot = Join-Path ([IO.Path]::GetTempPath()) 'x265tests'
+if (-not (Test-Path $WorkRoot)) { New-Item -ItemType Directory -Path $WorkRoot -Force | Out-Null }
 
 Add-Type -TypeDefinition @'
 namespace X265 { public static class NativeProc {
@@ -9,16 +34,16 @@ namespace X265 { public static class NativeProc {
 '@
 
 # echte FileJob-klasse, met een nep-Dispatcher zodat het op Linux compileert
-$fj = Get-Content -Raw /tmp/build/cs_filejob_test.cs
+$fj = Get-Content -Raw (Join-Path $TestDir 'cs_filejob_test.cs')
 Add-Type -TypeDefinition $fj
 
-. /tmp/build/part2.ps1
-. /tmp/build/part4.ps1
-. /tmp/build/part5.ps1
+. (Join-Path $SrcDir 'part2.ps1')
+. (Join-Path $SrcDir 'part4.ps1')
+. (Join-Path $SrcDir 'part5.ps1')
 Invoke-Expression $HelperText
 
-$sync.Ffmpeg  = '/usr/bin/ffmpeg'
-$sync.Ffprobe = '/usr/bin/ffprobe'
+$sync.Ffmpeg  = $FFMPEG
+$sync.Ffprobe = $FFPROBE
 
 function Drain-Jobs { $j=$null; while ($sync.NewJobs.TryDequeue([ref]$j)) { $j } }
 function Drain-Log { $l=''; while ($sync.LogQueue.TryDequeue([ref]$l)) { $l } }
@@ -56,7 +81,7 @@ function New-Job {
     return $j
 }
 
-function Probe-Dur { param([string]$p) [double](& /usr/bin/ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 $p) }
+function Probe-Dur { param([string]$p) [double](& $FFPROBE -v error -show_entries format=duration -of default=nw=1:nk=1 $p) }
 
 function Enqueue-Jobs {
     param($JobList)

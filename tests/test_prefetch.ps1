@@ -1,9 +1,9 @@
-. /tmp/build/testlib.ps1
+. (Join-Path $PSScriptRoot 'testlib.ps1')
 $ok=0;$bad=0
 function Check { param([string]$W,[bool]$C,[string]$E='') if($C){$script:ok++;"  OK    $W $E"}else{$script:bad++;"  FOUT  $W $E"} }
 function Fresh { param($D) if(Test-Path $D){Remove-Item -Recurse -Force $D}; New-Item -ItemType Directory -Path $D -Force|Out-Null }
 function MkVid { param($P,[int]$Sec=8)
-  & /usr/bin/ffmpeg -hide_banner -loglevel error -y -f lavfi -i "testsrc=size=320x240:rate=25:duration=$Sec" `
+  & $FFMPEG -hide_banner -loglevel error -y -f lavfi -i "testsrc=size=320x240:rate=25:duration=$Sec" `
     -f lavfi -i "sine=duration=$Sec" -map 0:v -map 1:a -c:v libx264 -preset ultrafast -crf 36 -c:a aac $P 2>$null | Out-Null }
 function PreDirs { @(Get-ChildItem /tmp/x265work -Directory -Filter 'x265_pre_*' -EA SilentlyContinue) }
 function Run { param($Jobs,[bool]$Prefetch=$true)

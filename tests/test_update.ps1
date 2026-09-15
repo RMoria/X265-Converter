@@ -1,9 +1,17 @@
+# Zelfstandig: deze test laadt testlib niet, dus de paden hier uitzoeken.
+$TestDir = $PSScriptRoot
+if (-not $TestDir) { $TestDir = Split-Path -Parent $MyInvocation.MyCommand.Path }
+$SrcDir = Join-Path (Split-Path -Parent $TestDir) 'src'
+if (-not (Test-Path (Join-Path $SrcDir 'part2.ps1'))) { $SrcDir = $TestDir }
+$AppScript = Join-Path (Split-Path -Parent $TestDir) 'X265-Converter.ps1'
+if (-not (Test-Path $AppScript)) { $AppScript = Join-Path $TestDir 'X265-Converter.ps1' }
+
 $ErrorActionPreference = 'Stop'
 
 # De updater zit sinds 1.8 IN X265-Converter.ps1 zelf. Voor het los
 # uitproberen van de onderdelen wordt het blok tussen de twee merktekens
 # uit het samengestelde script gesneden en apart uitgevoerd.
-$heel = Get-Content -Raw /tmp/build/X265-Converter.ps1
+$heel = Get-Content -Raw $AppScript
 $i = $heel.IndexOf('# ==== BIJWERKEN BEGIN ====')
 $j = $heel.IndexOf('# ==== BIJWERKEN EIND ====')
 if ($i -lt 0 -or $j -lt $i) { throw 'Het bijwerkblok is niet gevonden in X265-Converter.ps1' }
@@ -26,12 +34,12 @@ function Draai-Updater {
     # en dan komt er niets van de meegegeven schakelaars aan.
     param([string]$Map, [string[]]$Argumenten = @())
     $kopie = Join-Path $Map 'X265-Converter.ps1'
-    return @(& /opt/pwsh/pwsh -NoProfile -File $kopie -Bijwerken @Argumenten 2>&1)
+    return @(& (Get-Process -Id $PID).Path -NoProfile -File $kopie -Bijwerken @Argumenten 2>&1)
 }
 function Zet-Versie {
     param([string]$Map, [string]$Versie)
     if (-not (Test-Path -LiteralPath $Map)) { New-Item -ItemType Directory -Path $Map -Force | Out-Null }
-    $t = (Get-Content -Raw /tmp/build/X265-Converter.ps1) -replace "(?m)^\`$AppVersion = '[^']+'", "`$AppVersion = '$Versie'"
+    $t = (Get-Content -Raw $AppScript) -replace "(?m)^\`$AppVersion = '[^']+'", "`$AppVersion = '$Versie'"
     Set-Content -LiteralPath (Join-Path $Map 'X265-Converter.ps1') -Value $t -Encoding UTF8
 }
 function LeesLog {
@@ -87,7 +95,7 @@ Set-Content '/tmp/up/tmp/X265-Converter.ps1' "`$AppVersion = '1.5'"
 Check 'te klein wordt geweigerd'  ((Test-Binnengekomen -Tijdelijk '/tmp/up/tmp' -Verwacht ([version]'1.5')) -match 'kan niet kloppen')
 
 # een echt, groot en geldig script maken
-$echt = Get-Content -Raw /tmp/build/X265-Converter.ps1
+$echt = Get-Content -Raw $AppScript
 ($echt -replace "(?m)^\`$AppVersion = '[^']+'", "`$AppVersion = '1.5'") | Set-Content '/tmp/up/tmp/X265-Converter.ps1'
 Check 'goed bestand wordt goedgekeurd' ((Test-Binnengekomen -Tijdelijk '/tmp/up/tmp' -Verwacht ([version]'1.5')) -eq '')
 Check 'verkeerde versie valt op'  ((Test-Binnengekomen -Tijdelijk '/tmp/up/tmp' -Verwacht ([version]'1.9')) -match 'beloofde')
@@ -179,7 +187,7 @@ Check 'niets aan -> niet draaien' (-not (Test-DraaitAl))
 ''
 
 '--- 11. de starter overschrijft zichzelf niet ---'
-$cmd = Get-Content -Raw /tmp/build/X265-Converter.cmd
+$cmd = Get-Content -Raw (Join-Path (Split-Path -Parent $AppScript) 'X265-Converter.cmd')
 Check 'wisselt via een hulpje'    ($cmd -match 'x265-wissel\.cmd')
 Check 'hulpje wacht eerst'        ($cmd -match 'ping -n 3')
 Check 'en sluit meteen af'        ($cmd -match '(?s)x265-wissel\.cmd"\s*\r?\n\s*exit /b 0')
@@ -226,7 +234,7 @@ Check 'TLS 1.2 wordt gezet'        ($b -match 'SecurityProtocolType\]::Tls12')
 ''
 
 '--- 14. het programma meldt wat de updater deed ---'
-$p8 = Get-Content -Raw /tmp/build/part8.ps1
+$p8 = Get-Content -Raw $SrcDir/part8.ps1
 Check 'leest het logboek'          ($p8 -match 'X265-Bijwerken\.log')
 Check 'kijkt of het vers is'       ($p8 -match 'TotalMinutes -lt 5')
 Check 'waarschuwt als hij niet liep' ($p8 -match 'bij deze start niet gedraaid')

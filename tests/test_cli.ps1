@@ -1,9 +1,9 @@
-. /tmp/build/testlib.ps1
+. (Join-Path $PSScriptRoot 'testlib.ps1')
 $ok=0;$bad=0
 function Check { param([string]$W,[bool]$C,[string]$E='') if($C){$script:ok++;"  OK    $W $E"}else{$script:bad++;"  FOUT  $W $E"} }
 function Fresh { param($D) if(Test-Path $D){Remove-Item -Recurse -Force $D}; New-Item -ItemType Directory -Path $D -Force|Out-Null }
 function MkVid { param($P,[int]$Sec=6,[string]$V='libx264')
-  & /usr/bin/ffmpeg -hide_banner -loglevel error -y -f lavfi -i "testsrc=size=320x240:rate=25:duration=$Sec" `
+  & $FFMPEG -hide_banner -loglevel error -y -f lavfi -i "testsrc=size=320x240:rate=25:duration=$Sec" `
     -f lavfi -i "sine=duration=$Sec" -map 0:v -map 1:a -c:v $V -preset ultrafast -crf 36 -c:a aac $P 2>$null | Out-Null }
 
 '############ OPDRACHTREGEL: -In / -Out ############'
@@ -128,14 +128,14 @@ Drain-Log | Out-Null
 Check 'conversie geslaagd'       ($sync.Success -eq 1)                    "(succ=$($sync.Success) fail=$($sync.Failed))"
 Check 'staat op de gevraagde plek' (Test-Path '/tmp/cli/run/klaar/mijn naam.mkv')
 Check 'geen .x265 ernaast'       (-not (Test-Path '/tmp/cli/run/bron.x265.mkv'))
-$c = (& /usr/bin/ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=nw=1:nk=1 '/tmp/cli/run/klaar/mijn naam.mkv')
+$c = (& $FFPROBE -v error -select_streams v:0 -show_entries stream=codec_name -of default=nw=1:nk=1 '/tmp/cli/run/klaar/mijn naam.mkv')
 Check 'is HEVC geworden'         ("$c".Trim() -eq 'hevc')                 "($c)"
 Check 'origineel blijft staan'   (Test-Path '/tmp/cli/run/bron.mkv')
 ''
 '--- 6. -In/-Out overleven de herstart zonder console ---'
 # Get-RelaunchArguments bouwt de opdrachtregel voor de instantie die
 # blijft leven. Gaat -In daar verloren, dan verdwijnt de opdracht.
-$p1  = Get-Content -Raw /tmp/build/part1.ps1
+$p1  = Get-Content -Raw $SrcDir/part1.ps1
 $blk = $p1.Substring($p1.IndexOf('function Get-RelaunchArguments'))
 $blk = $blk.Substring(0, $blk.IndexOf('if ($FromLauncher)'))
 $sb2 = [scriptblock]::Create($blk + "`n" + '

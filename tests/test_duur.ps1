@@ -1,9 +1,9 @@
-. /tmp/build/testlib.ps1
+. (Join-Path $PSScriptRoot 'testlib.ps1')
 $ok=0;$bad=0
 function Check { param([string]$W,[bool]$C,[string]$E='') if($C){$script:ok++;"  OK    $W $E"}else{$script:bad++;"  FOUT  $W $E"} }
 function Fresh { param($D) if(Test-Path $D){Remove-Item -Recurse -Force $D}; New-Item -ItemType Directory -Path $D -Force|Out-Null }
 function MkVid { param($P,[int]$Sec=8)
-  & /usr/bin/ffmpeg -hide_banner -loglevel error -y -f lavfi -i "testsrc=size=320x240:rate=25:duration=$Sec" `
+  & $FFMPEG -hide_banner -loglevel error -y -f lavfi -i "testsrc=size=320x240:rate=25:duration=$Sec" `
     -f lavfi -i "sine=duration=$Sec" -map 0:v -map 1:a -c:v libx264 -preset ultrafast -crf 36 -c:a aac $P 2>$null | Out-Null }
 
 '############ SPEELDUUR ONBEKEND ############'
@@ -11,7 +11,7 @@ function MkVid { param($P,[int]$Sec=8)
 '--- 1. Get-DurationSec haalt de duur er op drie manieren uit ---'
 Fresh '/tmp/du'
 MkVid '/tmp/du/gewoon.mkv' 8
-& /usr/bin/ffmpeg -hide_banner -loglevel error -y -i '/tmp/du/gewoon.mkv' -c copy '/tmp/du/stroom.ts' 2>$null | Out-Null
+& $FFMPEG -hide_banner -loglevel error -y -i '/tmp/du/gewoon.mkv' -c copy '/tmp/du/stroom.ts' 2>$null | Out-Null
 
 $sb = [scriptblock]::Create(($ConvertWorker.ToString() -replace '(?s)^.*?    function Get-DurationSec', '    function Get-DurationSec' -replace '(?s)\r?\n    # -+\r?\n    #  Aantal audiokanalen.*$','') + "`n" + '
 "mkv : {0:N2}" -f (Get-DurationSec "/tmp/du/gewoon.mkv")
@@ -72,7 +72,7 @@ Check 'toch gewoon omgezet'      ($sync.Success -eq 1 -and (Test-Path '/tmp/du3/
 ''
 
 '--- 4. de balk gaat heen en weer in plaats van dood op nul ---'
-$tick = (Get-Content -Raw /tmp/build/part8.ps1)
+$tick = (Get-Content -Raw $SrcDir/part8.ps1)
 $blok = $tick.Substring($tick.IndexOf('$duurOnbekend ='))
 $blok = $blok.Substring(0, 1200)
 Check 'onbekende duur herkend'   ($blok -match 'CurDurationSec -le 0')
@@ -87,12 +87,12 @@ Check 'overal netjes teruggezet' ($n -eq 3)                                     
 # Met alle speelduren op nul is "nog te doen" nul. Zonder vangnet staat de
 # bovenste balk dan vol terwijl er nog honderden bestanden wachten - precies
 # wat er op het scherm van 14 september te zien was.
-$tk = (Get-Content -Raw /tmp/build/part8.ps1)
+$tk = (Get-Content -Raw $SrcDir/part8.ps1)
 Check 'bruikbaarheid wordt getoetst' ($tk -match '\$duurBruikbaar =')
 Check 'balk telt dan op bestanden'   ($tk -match 'op aantal bestanden; speelduur onbekend')
 Check 'tijdsindicatie ook'           ($tk -match 'tijdsindicatie op aantal bestanden')
 Check 'snelheid wordt een streepje'  ($tk -match [regex]::Escape('if (-not $duurBruikbaar) { $ui.stSpeed.Text = ''-'' }'))
-Check 'EtaFiles wordt gereset'       ((@([regex]::Matches((Get-Content -Raw /tmp/build/part7.ps1), 'EtaFiles')).Count) -eq 2)
+Check 'EtaFiles wordt gereset'       ((@([regex]::Matches((Get-Content -Raw $SrcDir/part7.ps1), 'EtaFiles')).Count) -eq 2)
 
 # de rekensom zelf nabouwen met de cijfers van dat scherm
 function OverallPct {

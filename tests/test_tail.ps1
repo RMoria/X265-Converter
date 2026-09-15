@@ -25,37 +25,37 @@ function Run { param($Dir,$Name,[int]$Dur,[bool]$Tail=$true)
 '############ GELUIDSCONTROLE: RANDGEVALLEN ############'
 ''
 '--- 1. controle uit: er wordt niets gemeten en niets opgevuld ---'
-Fresh $WorkRoot/tl/a
-MkVid "$WorkRoot/tl/a/kort x264.mkv" 60 20
-$log = Run $WorkRoot/tl/a 'kort x264.mkv' 60 $false
+Fresh /tmp/tl/a
+MkVid '/tmp/tl/a/kort x264.mkv' 60 20
+$log = Run /tmp/tl/a 'kort x264.mkv' 60 $false
 Check 'geslaagd'                      ($sync.Success -eq 1)
-Check 'origineel verwijderd'          (-not (Test-Path "$WorkRoot/tl/a/kort x264.mkv"))
+Check 'origineel verwijderd'          (-not (Test-Path '/tmp/tl/a/kort x264.mkv'))
 Check 'bron niet gemeten'             (-not (($log -join ' ') -match 'Let op de bron'))
 Check 'niet opgevuld'                 (-not (($log -join ' ') -match 'Staart opgevuld'))
 Check 'geen VCP'                      (-not (($log -join ' ') -match 'GELUID VERLOREN'))
 ''
 '--- 2. bron zonder geluidsspoor: netjes overslaan, geen VCP ---'
-Fresh $WorkRoot/tl/b
-MkVid "$WorkRoot/tl/b/stom x264.mkv" 40 0
-$log = Run $WorkRoot/tl/b 'stom x264.mkv' 40
+Fresh /tmp/tl/b
+MkVid '/tmp/tl/b/stom x264.mkv' 40 0
+$log = Run /tmp/tl/b 'stom x264.mkv' 40
 Check 'geslaagd'                      ($sync.Success -eq 1)                  "(warn=$($sync.Warned))"
 Check 'geen waarschuwing'             ($sync.Warned -eq 0)
 Check 'controle overgeslagen gemeld'  (($log -join ' ') -match 'Geluidscontrole overgeslagen|geen audiospoor')
 Check 'geen VCP'                      (-not (($log -join ' ') -match 'GELUID VERLOREN'))
-Check 'geen origineel meer'           (-not (Test-Path "$WorkRoot/tl/b/stom x264.mkv"))
+Check 'geen origineel meer'           (-not (Test-Path '/tmp/tl/b/stom x264.mkv'))
 ''
 '--- 3. te kort bestand om te meten: geen oordeel, geen ingreep ---'
-Fresh $WorkRoot/tl/c
-MkVid "$WorkRoot/tl/c/mini x264.mkv" 6 6
-$log = Run $WorkRoot/tl/c 'mini x264.mkv' 6
+Fresh /tmp/tl/c
+MkVid '/tmp/tl/c/mini x264.mkv' 6 6
+$log = Run /tmp/tl/c 'mini x264.mkv' 6
 Check 'geslaagd'                      ($sync.Success -eq 1)                  "(warn=$($sync.Warned))"
 Check 'geen VCP'                      (-not (($log -join ' ') -match 'GELUID VERLOREN'))
 Check 'geen noodstopteller'           ($sync.FailStreak -eq 0)
 ''
 '--- 4. randgeval: tekort precies rond de drempel telt niet als fout ---'
-Fresh $WorkRoot/tl/d
-MkVid "$WorkRoot/tl/d/rand x264.mkv" 60 58     # 2 s tekort, gelijk aan de drempel
-$log = Run $WorkRoot/tl/d 'rand x264.mkv' 60
+Fresh /tmp/tl/d
+MkVid '/tmp/tl/d/rand x264.mkv' 60 58     # 2 s tekort, gelijk aan de drempel
+$log = Run /tmp/tl/d 'rand x264.mkv' 60
 Check 'geslaagd, geen waarschuwing'   ($sync.Success -eq 1 -and $sync.Warned -eq 0) "(succ=$($sync.Success) warn=$($sync.Warned))"
 Check 'geen VCP'                      (-not (($log -join ' ') -match 'GELUID VERLOREN'))
 ''

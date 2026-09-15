@@ -22,11 +22,11 @@ function Run { param($Dir,$Name,[int]$Dur,[double]$Margin=2.0,[double]$Limit=30.
 '############ VERLIES IN VERHOUDING: OPVULLEN OF AFKEUREN ############'
 ''
 '--- 1. klein verlies (3 s), marge 2 / grens 30: houden en opvullen ---'
-Fresh $WorkRoot/ls/a
-MkSrc "$WorkRoot/ls/a/klein x264.mkv" 60 60
+Fresh /tmp/ls/a
+MkSrc '/tmp/ls/a/klein x264.mkv' 60 60
 # marge 2 en grens 30, maar verlies kunstmatig afdwingen met marge -3
-$log = Run $WorkRoot/ls/a 'klein x264.mkv' 60 -3.0 30.0
-$f = @(Get-ChildItem $WorkRoot/ls/a -File | ForEach-Object Name)
+$log = Run /tmp/ls/a 'klein x264.mkv' 60 -3.0 30.0
+$f = @(Get-ChildItem /tmp/ls/a -File | ForEach-Object Name)
 Check 'GEEN VCP'                    (-not (($log -join ' ') -cmatch 'GELUID VERLOREN'))
 Check 'verlies wel gemeld'          (($log -join ' ') -match 'geluid verloren aan het eind')
 Check 'onder de grens gemeld'       (($log -join ' ') -match 'Onder de grens van 30 s')
@@ -36,11 +36,11 @@ Check 'origineel verwijderd'        (-not ($f -contains 'klein x264.mkv'))
 Check 'geen VCP-hernoeming'         (@($f | Where-Object { $_ -like '*.VCP.*' }).Count -eq 0)
 ''
 '--- 2. groot verlies: grens 0 dwingt VCP af ---'
-Fresh $WorkRoot/ls/b
-MkSrc "$WorkRoot/ls/b/groot x264.mkv" 60 60
+Fresh /tmp/ls/b
+MkSrc '/tmp/ls/b/groot x264.mkv' 60 60
 # marge en grens beide negatief: dan valt elk verschil boven de grens
-$log = Run $WorkRoot/ls/b 'groot x264.mkv' 60 -3.0 -1.0
-$f = @(Get-ChildItem $WorkRoot/ls/b -File | ForEach-Object Name | Sort-Object)
+$log = Run /tmp/ls/b 'groot x264.mkv' 60 -3.0 -1.0
+$f = @(Get-ChildItem /tmp/ls/b -File | ForEach-Object Name | Sort-Object)
 Check 'wel VCP'                     (($log -join ' ') -cmatch 'GELUID VERLOREN')
 Check 'grens gemeld'                (($log -join ' ') -match 'meer dan de grens')
 Check 'resultaat weggegooid'        (@($f | Where-Object { $_ -like '*.x265.mkv' }).Count -eq 0)
@@ -48,19 +48,19 @@ Check 'bron hernoemd'               ($f -contains 'groot x264.VCP.mkv')         
 Check 'niet geslaagd'               ($sync.Success -eq 0)
 ''
 '--- 3. bron zelf kort, geen verlies: opvullen, geen verliesmelding ---'
-Fresh $WorkRoot/ls/c
-MkSrc "$WorkRoot/ls/c/kortebron x264.mkv" 60 45
-$log = Run $WorkRoot/ls/c 'kortebron x264.mkv' 60
+Fresh /tmp/ls/c
+MkSrc '/tmp/ls/c/kortebron x264.mkv' 60 45
+$log = Run /tmp/ls/c 'kortebron x264.mkv' 60
 Check 'geslaagd zonder waarschuwing'($sync.Success -eq 1 -and $sync.Warned -eq 0) "(succ=$($sync.Success) warn=$($sync.Warned))"
 Check 'geen verliesmelding'         (-not (($log -join ' ') -match 'geluid verloren aan het eind'))
 Check 'wel opgevuld'                (($log -join ' ') -match 'Staart opgevuld')
-$e = AudioEnd "$WorkRoot/ls/c/kortebron.x265.mkv"
+$e = AudioEnd '/tmp/ls/c/kortebron.x265.mkv'
 Check 'geluid tot het einde'        ($e -gt 55)                                  ("laatste audio {0:N1} s" -f $e)
 ''
 '--- 4. gezonde bron: helemaal niets ---'
-Fresh $WorkRoot/ls/d
-MkSrc "$WorkRoot/ls/d/goed x264.mkv" 45 45
-$log = Run $WorkRoot/ls/d 'goed x264.mkv' 45
+Fresh /tmp/ls/d
+MkSrc '/tmp/ls/d/goed x264.mkv' 45 45
+$log = Run /tmp/ls/d 'goed x264.mkv' 45
 Check 'geslaagd'                    ($sync.Success -eq 1 -and $sync.Warned -eq 0)
 Check 'geen verlies, geen opvullen' (-not (($log -join ' ') -match 'verloren|Staart opgevuld'))
 Check 'meldt dat het klopt'         (($log -join ' ') -match 'Geluid loopt tot het einde')

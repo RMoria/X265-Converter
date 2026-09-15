@@ -69,46 +69,46 @@ foreach ($t in @(@('copy',2,'-c:a copy'), @('aac',2,'-c:a aac -b:a 192k -af ares
 ''
 $srcGap = 0.0
 '--- 1. kopieren: het gat blijft staan (dit is de klacht) ---'
-$log = RunOne $WorkRoot/aud/c 'copy'
-$srcGap = GapOf "$WorkRoot/aud/c/film x264.mkv"
-$g = GapOf "$WorkRoot/aud/c/film.x265.mkv"
+$log = RunOne /tmp/aud/c 'copy'
+$srcGap = GapOf '/tmp/aud/c/film x264.mkv'
+$g = GapOf '/tmp/aud/c/film.x265.mkv'
 Check 'bron heeft een gat van ~4 s'  ($srcGap -gt 3.5)                "bron=$([math]::Round($srcGap,3))s"
 Check 'kopieren neemt het gat over'  ($g -gt 3.5)                     "uit=$([math]::Round($g,3))s"
-Check 'kopieren wijzigt codec niet'  ((AudioOf "$WorkRoot/aud/c/film.x265.mkv") -like 'aac*')
+Check 'kopieren wijzigt codec niet'  ((AudioOf '/tmp/aud/c/film.x265.mkv') -like 'aac*')
 ''
 '--- 2. aac: het gat is weg ---'
-$log = RunOne $WorkRoot/aud/a 'aac'
-$g = GapOf "$WorkRoot/aud/a/film.x265.mkv"
+$log = RunOne /tmp/aud/a 'aac'
+$g = GapOf '/tmp/aud/a/film.x265.mkv'
 Check 'aac vult het gat op'          ($g -lt 0.1)                     "uit=$([math]::Round($g,3))s"
-Check 'aac decodeert schoon'         (DecodeClean "$WorkRoot/aud/a/film.x265.mkv")
+Check 'aac decodeert schoon'         (DecodeClean '/tmp/aud/a/film.x265.mkv')
 Check 'aac in de log gemeld'         (($log -join ' ') -match 'Geluid: aac')
 Check 'kanaalaantal gemeld'          (($log -join ' ') -match 'bron heeft 1 kanaal')
 ''
 '--- 3. ac3 en flac: ook geen gat ---'
-$log = RunOne $WorkRoot/aud/b 'ac3'
-$g = GapOf "$WorkRoot/aud/b/film.x265.mkv"
+$log = RunOne /tmp/aud/b 'ac3'
+$g = GapOf '/tmp/aud/b/film.x265.mkv'
 Check 'ac3 vult het gat op'          ($g -lt 0.1)                     "uit=$([math]::Round($g,3))s"
-Check 'ac3 is ook echt ac3'          ((AudioOf "$WorkRoot/aud/b/film.x265.mkv") -like 'ac3*')
-$log = RunOne $WorkRoot/aud/f 'flac'
-$g = GapOf "$WorkRoot/aud/f/film.x265.mkv"
+Check 'ac3 is ook echt ac3'          ((AudioOf '/tmp/aud/b/film.x265.mkv') -like 'ac3*')
+$log = RunOne /tmp/aud/f 'flac'
+$g = GapOf '/tmp/aud/f/film.x265.mkv'
 Check 'flac vult het gat op'         ($g -lt 0.1)                     "uit=$([math]::Round($g,3))s"
-Check 'flac is ook echt flac'        ((AudioOf "$WorkRoot/aud/f/film.x265.mkv") -like 'flac*')
+Check 'flac is ook echt flac'        ((AudioOf '/tmp/aud/f/film.x265.mkv') -like 'flac*')
 ''
 '--- 4. 5.1 bron blijft 5.1 ---'
-$log = RunOne $WorkRoot/aud/six 'aac' 6
-Check '5.1 blijft 6 kanalen'         ((AudioOf "$WorkRoot/aud/six/film.x265.mkv") -eq 'aac,6') ("-> " + (AudioOf "$WorkRoot/aud/six/film.x265.mkv"))
-Check '5.1 gat opgevuld'             ((GapOf "$WorkRoot/aud/six/film.x265.mkv") -lt 0.1)
+$log = RunOne /tmp/aud/six 'aac' 6
+Check '5.1 blijft 6 kanalen'         ((AudioOf '/tmp/aud/six/film.x265.mkv') -eq 'aac,6') ("-> " + (AudioOf '/tmp/aud/six/film.x265.mkv'))
+Check '5.1 gat opgevuld'             ((GapOf '/tmp/aud/six/film.x265.mkv') -lt 0.1)
 ''
 '--- 5. sync blijft staan bij vertraagde audio ---'
-Fresh $WorkRoot/aud/s
-& $FFMPEG -hide_banner -loglevel error -y -f lavfi -i "testsrc=size=320x240:rate=25:duration=10" -itsoffset 2 -f lavfi -i "sine=frequency=1000:duration=8" -map 0:v -map 1:a -c:v libx264 -preset ultrafast -crf 32 -c:a aac "$WorkRoot/aud/s/vertraagd x264.mkv" 2>$null | Out-Null
+Fresh /tmp/aud/s
+& $FFMPEG -hide_banner -loglevel error -y -f lavfi -i "testsrc=size=320x240:rate=25:duration=10" -itsoffset 2 -f lavfi -i "sine=frequency=1000:duration=8" -map 0:v -map 1:a -c:v libx264 -preset ultrafast -crf 32 -c:a aac '/tmp/aud/s/vertraagd x264.mkv' 2>$null | Out-Null
 Reset-Run (Std-Settings -DeleteOrig $false -Subs $false -AudioMode 'aac')
-Enqueue-Jobs @(New-Job -FullPath "$WorkRoot/aud/s/vertraagd x264.mkv" -Dur 10.0)
+Enqueue-Jobs @(New-Job -FullPath '/tmp/aud/s/vertraagd x264.mkv' -Dur 10.0)
 $w = Start-W $ConvertWorker 'conv'; while (-not $w.Handle.IsCompleted) { Start-Sleep -Milliseconds 200 }; Stop-W $w | Out-Null
 Drain-Log | Out-Null
 $pyOut = & python3 -c @"
 import subprocess
-raw = subprocess.run(['ffmpeg','-v','error','-i',"$WorkRoot/aud/s/vertraagd.x265.mkv",'-map','0:a','-ac','1','-ar','8000','-f','f32le','-'],capture_output=True).stdout
+raw = subprocess.run(['ffmpeg','-v','error','-i','/tmp/aud/s/vertraagd.x265.mkv','-map','0:a','-ac','1','-ar','8000','-f','f32le','-'],capture_output=True).stdout
 import struct
 a = struct.unpack('<%df' % (len(raw)//4), raw[:len(raw)//4*4])
 first = next((i for i,v in enumerate(a) if abs(v) > 0.01), -1)

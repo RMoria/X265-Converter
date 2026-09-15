@@ -27,29 +27,29 @@ function AudioEnd { param($P)
 '############ KORTE STAART, OPVULLEN EN VCP ############'
 ''
 '--- 1. bron met geluid tot 20 s van 60 s: opvullen, GEEN Let op ---'
-Fresh $WorkRoot/vc/a
-MkSrc "$WorkRoot/vc/a/kort x264.mkv" 60 20
-$log = Run $WorkRoot/vc/a 'kort x264.mkv' 60
-$f = @(Get-ChildItem $WorkRoot/vc/a -File | ForEach-Object Name)
+Fresh /tmp/vc/a
+MkSrc '/tmp/vc/a/kort x264.mkv' 60 20
+$log = Run /tmp/vc/a 'kort x264.mkv' 60
+$f = @(Get-ChildItem /tmp/vc/a -File | ForEach-Object Name)
 Check 'geslaagd, geen waarschuwing'  ($sync.Success -eq 1 -and $sync.Warned -eq 0) "(succ=$($sync.Success) warn=$($sync.Warned))"
 Check 'origineel verwijderd'         (-not ($f -contains 'kort x264.mkv'))
 Check 'bron-tekort herkend'          (($log -join ' ') -match 'Let op de bron')
 Check 'staart opgevuld'              (($log -join ' ') -match 'Staart opgevuld tot het einde')
-$e = AudioEnd "$WorkRoot/vc/a/kort.x265.mkv"
+$e = AudioEnd '/tmp/vc/a/kort.x265.mkv'
 Check 'geluid loopt nu tot het eind' ($e -gt 55)                                    ("laatste audio op {0:N1} s" -f $e)
 ''
 '--- 2. zelfde bron, opvullen uit: melden maar niet ingrijpen ---'
-Fresh $WorkRoot/vc/b
-MkSrc "$WorkRoot/vc/b/kort2 x264.mkv" 60 20
-$log = Run $WorkRoot/vc/b 'kort2 x264.mkv' 60 $false
+Fresh /tmp/vc/b
+MkSrc '/tmp/vc/b/kort2 x264.mkv' 60 20
+$log = Run /tmp/vc/b 'kort2 x264.mkv' 60 $false
 Check 'geslaagd, geen waarschuwing'  ($sync.Success -eq 1 -and $sync.Warned -eq 0)
 Check 'wel gemeld'                   (($log -join ' ') -match 'Niets aan te doen bij het omzetten')
-Check 'niet opgevuld'                ((AudioEnd "$WorkRoot/vc/b/kort2.x265.mkv") -lt 25)
+Check 'niet opgevuld'                ((AudioEnd '/tmp/vc/b/kort2.x265.mkv') -lt 25)
 ''
 '--- 3. gezonde bron: niets bijzonders ---'
-Fresh $WorkRoot/vc/c
-MkSrc "$WorkRoot/vc/c/heel x264.mkv" 40 40
-$log = Run $WorkRoot/vc/c 'heel x264.mkv' 40
+Fresh /tmp/vc/c
+MkSrc '/tmp/vc/c/heel x264.mkv' 40 40
+$log = Run /tmp/vc/c 'heel x264.mkv' 40
 Check 'geslaagd'                     ($sync.Success -eq 1 -and $sync.Warned -eq 0)
 Check 'geen opvullen'                (-not (($log -join ' ') -match 'Staart opgevuld'))
 Check 'geen VCP'                     (-not (($log -join ' ') -match 'GELUID VERLOREN'))
@@ -58,31 +58,31 @@ Check 'log meldt bron-vergelijking'  (($log -join ' ') -match 'tekort .* bron')
 "====> $ok goed, $bad fout"
 
 '--- 4. uitvoer echt slechter dan de bron: VCP ---'
-Fresh $WorkRoot/vc/d
-MkSrc "$WorkRoot/vc/d/verlies x264.mkv" 40 40
+Fresh /tmp/vc/d
+MkSrc '/tmp/vc/d/verlies x264.mkv' 40 40
 # marge EN grens negatief zetten dwingt de VCP-route af, zodat het pad zelf
 # getest wordt. Alleen een negatieve marge is niet genoeg meer: klein verlies
 # valt nu onder de grens en wordt dan opgevuld en behouden.
 Reset-Run (Std-Settings -DeleteOrig $true -Subs $false -AudioMode 'aac' -Margin -1.0 -Limit -1.0)
-Enqueue-Jobs @(New-Job -FullPath "$WorkRoot/vc/d/verlies x264.mkv" -Dur 40.0)
+Enqueue-Jobs @(New-Job -FullPath '/tmp/vc/d/verlies x264.mkv' -Dur 40.0)
 $w = Start-W $ConvertWorker 'conv'; while (-not $w.Handle.IsCompleted) { Start-Sleep -Milliseconds 200 }; Stop-W $w | Out-Null
 $log = @(Drain-Log)
-$f = @(Get-ChildItem $WorkRoot/vc/d -File | ForEach-Object Name | Sort-Object)
+$f = @(Get-ChildItem /tmp/vc/d -File | ForEach-Object Name | Sort-Object)
 Check 'VCP gemeld'                   (($log -join ' ') -cmatch 'GELUID VERLOREN')
 Check 'resultaat weggegooid'         (-not ($f | Where-Object { $_ -like '*.x265.mkv' }))
 Check 'bron hernoemd naar VCP'       ($f -contains 'verlies x264.VCP.mkv')            ("map: " + ($f -join ', '))
 Check 'oude naam bestaat niet meer'  (-not ($f -contains 'verlies x264.mkv'))
 Check 'niet als geslaagd geteld'     ($sync.Success -eq 0)
 Check 'telt NIET mee voor noodstop'  ($sync.FailStreak -eq 0)                          "(streak=$($sync.FailStreak))"
-$rest = @(Get-ChildItem $WorkRoot/x265work -File -EA SilentlyContinue | Where-Object { $_.Name -like 'x265_*' })
+$rest = @(Get-ChildItem /tmp/x265work -File -EA SilentlyContinue | Where-Object { $_.Name -like 'x265_*' })
 Check 'werkmap opgeruimd'            ($rest.Count -eq 0)
 ''
 '--- 5. scanner slaat VCP-bestanden over ---'
-Fresh $WorkRoot/vc/e
-MkSrc "$WorkRoot/vc/e/gewoon x264.mkv" 8 8
-MkSrc "$WorkRoot/vc/e/eerder x264.VCP.mkv" 8 8
-MkSrc "$WorkRoot/vc/e/ook x264.VCP (2).mkv" 8 8
-$sync.ScanSettings = @{ Folders=@("$WorkRoot/vc/e"); Extensions=@('mkv'); Recursive=$true; VcpMarker='VCP' }
+Fresh /tmp/vc/e
+MkSrc '/tmp/vc/e/gewoon x264.mkv' 8 8
+MkSrc '/tmp/vc/e/eerder x264.VCP.mkv' 8 8
+MkSrc '/tmp/vc/e/ook x264.VCP (2).mkv' 8 8
+$sync.ScanSettings = @{ Folders=@('/tmp/vc/e'); Extensions=@('mkv'); Recursive=$true; VcpMarker='VCP' }
 $sync.ScanCancel=$false; $sync.ScanTotal=0; $sync.ScanChecked=0; $sync.ScanFound=0
 $sync.ScanSkippedHevc=0; $sync.ScanSkippedVcp=0; $sync.ScanSkippedNoVid=0; $sync.ScanMode='scan'
 $w = Start-W $ScanWorker 'scan'; while (-not $w.Handle.IsCompleted) { Start-Sleep -Milliseconds 200 }; Stop-W $w | Out-Null
