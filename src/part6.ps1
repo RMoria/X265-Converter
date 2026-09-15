@@ -194,6 +194,8 @@ function Save-Settings {
             HandleSubs    = [bool]$ui.chkSubs.IsChecked
             SmartRetry    = [bool]$script:SmartRetry
             ExitAfterStop = [bool]$ui.chkExitAfter.IsChecked
+            WatchFolders  = [bool]$ui.chkWatch.IsChecked
+            WatchMinutes  = [double]$script:WatchMinutes
             SubExtensions = @($script:SubExtensions)
             MaxFailStreak = [int]$script:MaxFailStreak
             KeepAwakeSignal = [string]$script:KeepAwakeSignal
@@ -451,6 +453,11 @@ if ($saved -ne $null) {
         if ($saved.HandleSubs    -ne $null) { $ui.chkSubs.IsChecked       = [bool]$saved.HandleSubs }
         if ($saved.SmartRetry    -ne $null) { $script:SmartRetry = [bool]$saved.SmartRetry }
         if ($saved.ExitAfterStop -ne $null) { $ui.chkExitAfter.IsChecked  = [bool]$saved.ExitAfterStop }
+        if ($saved.WatchFolders -ne $null)  { $ui.chkWatch.IsChecked      = [bool]$saved.WatchFolders }
+        if ($saved.WatchMinutes) {
+            $m = [double]$saved.WatchMinutes
+            if ($m -ge 1.0 -and $m -le 10080.0) { $script:WatchMinutes = $m }
+        }
 
         # SkipHevc uit oudere versies wordt bewust genegeerd: HEVC
         # overslaan is nu vast gedrag.

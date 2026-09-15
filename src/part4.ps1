@@ -598,6 +598,10 @@ $ScanWorker = {
         #  waarvan de bron er nog wel is blijft staan - die kan van een pc
         #  zijn die op dit moment aan het werk is.
         if ($locks.Count -gt 0 -and -not $sync.ScanCancel) {
+            # Er ligt een lock in deze map: er is dus een andere pc in de
+            # weer geweest. Aan het eind van de rit is nog een rondje
+            # kijken de moeite waard.
+            $sync.LockGezien = $true
             $opgeruimd = 0
             $stale = 15.0
             if ($st.LockStaleMinutes) { $stale = [double]$st.LockStaleMinutes }
@@ -662,6 +666,7 @@ $ScanWorker = {
                 Codec       = $info.Codec
                 IsHevc      = $isHevc
                 Include     = -not $isHevc
+                AutoQueue   = ([bool]$st.AutoQueue -and -not $isHevc)
             })
         }
 

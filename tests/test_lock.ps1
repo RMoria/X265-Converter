@@ -397,6 +397,10 @@ $blok = $wt.Substring($wt.IndexOf('function Start-Prefetch'))
 $blok = $blok.Substring(0, $blok.IndexOf('function Stop-Prefetch'))
 Check 'bron wordt delend geopend'   ($blok -match 'FileShare\]::Delete')
 Check 'en ook nog leesbaar/schrijf' ($blok -match 'FileShare\]::ReadWrite -bor')
-Check 'bezet -> kopie meteen weg'   ($wt -match '(?s)elseif \(\$poging\.Busy\).{0,400}Stop-Prefetch \$pre')
+# Binnen het 'bezet'-blok, dus voor de eerstvolgende 'else', moet de
+# vooruit gehaalde kopie worden afgebroken.
+$bezetBlok = $wt.Substring($wt.IndexOf('elseif ($poging.Busy)'))
+$bezetBlok = $bezetBlok.Substring(0, $bezetBlok.IndexOf('$job.Status     = ''Andere pc bezig'''))
+Check 'bezet -> kopie meteen weg'   ($bezetBlok -match 'Stop-Prefetch \$pre')          "($($bezetBlok.Length) tekens)"
 ''
 "====> $ok goed, $bad fout"

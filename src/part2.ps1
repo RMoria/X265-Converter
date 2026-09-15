@@ -215,6 +215,11 @@ $script:SharedLocks = $true
 # afpakken - ook niet als de klokken van de twee machines uiteenlopen.
 $script:LockStaleMinutes = 15.0
 
+# Hoe lang de wachtrij leeg moet zijn voordat er uit zichzelf opnieuw naar
+# de bronmappen wordt gekeken. Alleen van belang als het vinkje 'elk uur
+# opnieuw kijken' aanstaat.
+$script:WatchMinutes = 60.0
+
 # Wachtrij bewaren over een herstart heen. Staat UIT: bij het opstarten
 # begint de lijst leeg, zodat een nieuwe scan niet bij de resten van de
 # vorige keer komt te staan. Met deze instelling uit wordt de wachtrij ook
@@ -355,7 +360,12 @@ $sync = [hashtable]::Synchronized(@{})
 $sync.ScanBusy          = $false
 $sync.ScanCancel        = $false
 $sync.ScanSettings      = @{}
-$sync.ScanMode          = 'scan'    # scan | verify
+$sync.ScanMode          = 'scan'    # scan | verify | opdracht
+
+# Is er tijdens deze ronde ergens een lock van een andere pc gezien? Zo ja,
+# dan is er aan het eind nog een keer rondkijken de moeite waard: die pc
+# kan bestanden hebben laten liggen die hier nooit in de lijst kwamen.
+$sync.LockGezien        = $false
 
 # --- converteren ----------------------------------------------------
 $sync.ConvBusy          = $false

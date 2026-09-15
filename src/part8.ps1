@@ -108,7 +108,7 @@ function Invoke-Tick {
     }
     if ($autoQueue.Count -gt 0) {
         [void](Add-ToQueueBack $autoQueue)
-        Write-Log ("{0} bestand(en) van de opdrachtregel achteraan de wachtrij gezet." -f $autoQueue.Count)
+        Write-Log ("{0} bestand(en) automatisch achteraan de wachtrij gezet." -f $autoQueue.Count)
         Start-ConversionIfIdle
     }
     if ($added -gt 0) { Request-Save }
@@ -116,6 +116,23 @@ function Invoke-Tick {
     # ---------- opdrachten van een tweede aanroep -------------------
     # Read-Inbox houdt zichzelf op een ronde per twee seconden.
     Read-Inbox
+
+    # ---------- elk uur opnieuw kijken ------------------------------
+    #  De klok loopt alleen als er niets te doen is. Zodra er weer iets
+    #  draait of er staat weer werk klaar, begint het uur opnieuw.
+    if ([bool]$ui.chkWatch.IsChecked) {
+        if ($sync.ScanBusy -or $sync.ConvBusy -or $sync.Queue.Count -gt 0) {
+            $script:WatchVanaf = $null
+        }
+        elseif ($script:WatchVanaf -eq $null) {
+            $script:WatchVanaf = Get-Date
+        }
+        elseif (((Get-Date) - $script:WatchVanaf).TotalMinutes -ge [double]$script:WatchMinutes) {
+            $script:WatchVanaf = $null
+            [void](Start-WatchScan)
+        }
+    }
+    elseif ($script:WatchVanaf -ne $null) { $script:WatchVanaf = $null }
 
     # ---------- uitkomsten van de controleronde ---------------------
     $verified = 0
@@ -508,6 +525,10 @@ function Invoke-Tick {
 
         $emergency = [bool]$sync.EmergencyStop
 
+        # Nu vastleggen: hieronder worden deze vlaggen gewist, en voor de
+        # nascan moet ik weten of de gebruiker zelf heeft gestopt.
+        $gestopt = ([bool]$sync.Cancel -or [bool]$sync.StopAfterCurrent)
+
         $sync.ConvBusy         = $false
         $convBusy              = $false
         $sync.StopAfterCurrent = $false
@@ -570,8 +591,21 @@ function Invoke-Tick {
             Set-Status $eind
             Set-Title 'gereed'
 
+            # ---- nog een keer rondkijken -----------------------------
+            #  Alleen als er tijdens deze ronde ergens een lock van een
+            #  andere pc is gezien, en alleen als de gebruiker niet zelf
+            #  heeft gestopt. Start-Nascan doet het hoogstens een keer.
+            #
+            #  Dit staat bewust VOOR de afsluitteller: die wacht vanzelf
+            #  op een lopende scan, en vervalt zodra de conversie weer
+            #  aanslaat.
+            $nascan = $false
+            if (-not $gestopt -and [bool]$sync.LockGezien) {
+                $nascan = Start-Nascan
+            }
+
             # ---- afsluiten na stop, als dat is aangevinkt -----------
-            if ([bool]$ui.chkExitAfter.IsChecked) {
+            if (-not $nascan -and [bool]$ui.chkExitAfter.IsChecked) {
                 $script:ExitAt      = (Get-Date).AddSeconds(10)
                 $script:ExitPending = $true
                 Write-Log 'Afsluiten na conversie is aangevinkt; het programma sluit over 10 seconden.' 'WAARS'
@@ -766,6 +800,14 @@ $win.Add_Loaded({
         } else {
             Write-Log ("De opdracht van de opdrachtregel kon niet worden opgeslagen: {0}" -f $In) 'WAARS'
         }
+    }
+
+    # Afsluiten-na-conversie en elk-uur-kijken sluiten elkaar uit; de
+    # bewaarde stand kan die combinatie wel bevatten.
+    Set-WatchExitCombinatie
+    if ([bool]$ui.chkWatch.IsChecked) {
+        $script:WatchVanaf = Get-Date
+        Write-Log ('Elk uur opnieuw kijken staat aan: na {0:N0} minuten zonder werk worden de bronmappen opnieuw doorlopen.' -f $script:WatchMinutes)
     }
 
     $ui.stTotals.Text = Format-Totals

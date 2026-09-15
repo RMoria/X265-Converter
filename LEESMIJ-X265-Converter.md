@@ -1,8 +1,8 @@
 # Video naar H.265 / HEVC — PowerShell GUI
 
-**Versie 1.5 (14 september 2026)**
+**Versie 1.6 (15 september 2026)**
 
-Het versienummer staat achter in de venstertitel (`… [v1.5]`), als eerste regel
+Het versienummer staat achter in de venstertitel (`… [v1.6]`), als eerste regel
 in de log bij het opstarten, bovenaan `X265-Converter.error.log` en als `Version`
 in het instellingenbestand. Bij een melding is dat het eerste wat je wilt weten.
 Bijwerken gaat met `$AppVersion` en `$AppDate` bovenaan het script: tweede cijfer
@@ -11,6 +11,21 @@ erbij voor nieuw gedrag, derde cijfer voor een reparatie.
 Opvolger van `convert.bat`. Eén PowerShell-script met een grafische interface.
 
 ## Wat er per versie is veranderd
+
+### 1.6 — 15 september 2026
+
+- **Nascan na een ronde met locks.** Zijn er tijdens de rit lock-bestanden van
+  een andere pc gezien, dan worden de bronmappen aan het eind nog één keer
+  doorlopen en gaat wat er nog ligt meteen in de wachtrij. Zo raapt de pc die
+  als eerste klaar is op wat de ander heeft laten liggen.
+- **Nieuw vinkje: elk uur opnieuw kijken als de wachtrij leeg is.** Standaard
+  uit. Staat het aan, dan worden nieuwe bestanden vanzelf omgezet, zonder
+  meldingen en zonder klikken. Sluit zichzelf uit met "afsluiten na conversie
+  stop": een afgesloten programma kijkt nergens meer naar.
+- **Het bevestigingsvenster bij Start is weg.** Op Start drukken is de
+  bevestiging; het overzicht van de instellingen gaat naar de log. Ook de
+  melding dat er naar een andere werkmap is uitgeweken vraagt geen klik meer —
+  dat had zichzelf al opgelost.
 
 ### 1.5 — 14 september 2026
 
@@ -360,6 +375,49 @@ Achtergebleven lock-bestanden waarvan de bron niet meer bestaat worden bij het
 scannen opgeruimd. Dat kost geen extra ronde over de share: ze komen in dezelfde
 opsomming voorbij. Een lock waarvan de bron er nog wél is blijft staan — die kan
 van een pc zijn die op dit moment aan het werk is.
+
+## Vanzelf doorgaan: nascan en elk uur kijken
+
+### Nascan na een ronde met locks
+
+De mopronde binnen een conversie pakt alleen terug wat **deze** pc zelf had
+overgeslagen. Een andere pc kan echter dingen hebben laten liggen die hier nooit
+in de lijst kwamen: bestanden die tijdens de rit zijn bijgekomen, of die de ander
+halverwege heeft laten vallen toen hij werd gestopt.
+
+Daarom: is er tijdens de ronde ergens een lock-bestand gezien — bij het scannen
+of bij het oppakken — dan worden aan het eind de bronmappen nog één keer
+doorlopen. Wat daar nog ligt gaat meteen achteraan de wachtrij en de conversie
+begint vanzelf opnieuw. Regels die op "Andere pc bezig" of "Niet gevonden"
+stonden gaan eerst uit de lijst, zodat ze opnieuw kunnen worden beoordeeld.
+
+**Precies één keer per ronde.** Twee keer zou kunnen blijven rondzingen: de
+nascan ziet weer locks, start weer een nascan, en zo door zolang de andere pc
+bezig is. Het geheugen daarvoor gaat weer open zodra jij zelf op Start drukt of
+zodra "elk uur kijken" een nieuwe ronde begint.
+
+Er wordt geen nascan gedaan als je zelf hebt gestopt, en niet na een noodstop.
+
+### Elk uur opnieuw kijken
+
+Een vinkje in het instellingenpaneel: **"Elk uur opnieuw kijken als de wachtrij
+leeg is"**. Standaard uit.
+
+Staat het aan, dan wordt er na een uur zonder werk uit zichzelf naar de
+bronmappen gekeken. Nieuwe bestanden gaan meteen in de wachtrij en de conversie
+begint vanzelf — geen meldingen, geen klik op Start. Zo kun je het aan laten
+staan en worden nieuwe bestanden automatisch omgezet.
+
+De klok loopt alleen als er niets te doen is. Zodra er weer een scan of conversie
+draait, of er staat weer iets in de wachtrij, begint het uur opnieuw. Levert een
+ronde niets op, dan gebeurt er niets en begint het uur gewoon opnieuw.
+
+> **Dit sluit "afsluiten na conversie stop" uit.** Een afgesloten programma kijkt
+> nergens meer naar. Zet je het ene vinkje aan, dan gaat het andere uit en op
+> slot, zodat de combinatie niet stilletjes niets doet.
+
+Het uur zelf staat als `WatchMinutes` in het instellingenbestand (minimaal 1,
+hoogstens een week), het vinkje als `WatchFolders`.
 
 ## De bron eerst lokaal zetten
 
@@ -1042,6 +1100,8 @@ kopiëren, container MKV**. Aanpasbaar:
 - **Werkmap** — "Opruimen" wist achtergebleven `x265_*`-bestanden.
 - **Origineel verwijderen na geslaagde verplaatsing**
 - **Ondertitels meenemen naar de nieuwe naam**
+- **Elk uur opnieuw kijken als de wachtrij leeg is** — standaard uit. Zie
+  *Vanzelf doorgaan*. Kan niet samen met afsluiten na conversie stop.
 - **Programma afsluiten na conversie stop** — standaard uit. Sluit af als de
   wachtrij leeg is, én na Stop direct en Stop na huidige. Er wordt eerst alles
   bewaard (instellingen, wachtrij, totalen) en de werkmap opgeruimd. Je krijgt
@@ -1060,6 +1120,7 @@ in het instellingenbestand, dus met de hand aanpassen kan.
 | `PrefetchToWorkDir` | `true` | Bron eerst naar de werkmap kopiëren |
 | `PrefetchOnlyNetwork` | `true` | Alleen bij een UNC-pad of netwerkschijf |
 | `SharedLocks` | `true` | Lock-bestanden plaatsen voor twee pc's op dezelfde map |
+| `WatchMinutes` | `60` | Hoe lang de wachtrij leeg moet zijn voor een nieuwe ronde |
 | `LockStaleMinutes` | `15` | Wanneer een lock als verweesd geldt |
 | `RestoreQueue` | `false` | Wachtrij bewaren over een herstart heen |
 | `Recursive`, `KeepDate`, `SmartRetry` | `true` | Zie hierboven |

@@ -345,6 +345,8 @@
             <CheckBox x:Name="chkDeleteOrig" Content="Origineel verwijderen na geslaagde verplaatsing" IsChecked="True"/>
             <CheckBox x:Name="chkSubs"       Content="Ondertitels meenemen naar de nieuwe naam" IsChecked="True"/>
             <CheckBox x:Name="chkExitAfter"  Content="Programma afsluiten na conversie stop" IsChecked="False"/>
+            <CheckBox x:Name="chkWatch"      Content="Elk uur opnieuw kijken als de wachtrij leeg is" IsChecked="False"
+                      ToolTip="Kijkt na een uur zonder werk of er nieuwe bestanden in de bronmappen staan en zet die meteen om. Geen meldingen; laat het gewoon aanstaan."/>
           </StackPanel>
         </Grid>
       </GroupBox>

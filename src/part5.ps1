@@ -1518,6 +1518,10 @@ $ConvertWorker = {
         $script:LockStale = $lockStale
         if ($lockAan) { W ("Gedeelde map: er wordt per bestand een lock geplaatst (verweesd na {0:N0} min)." -f $lockStale) }
 
+        # Niet resetten als er al een lock is gezien tijdens de scan: die
+        # waarneming telt net zo goed mee voor de ronde hierna.
+        if (-not $lockAan) { $sync.LockGezien = $false }
+
         while ($true) {
 
             Update-Timers
@@ -1596,6 +1600,7 @@ $ConvertWorker = {
                     $script:HuidigLock = $lock
                 }
                 elseif ($poging.Busy) {
+                    $sync.LockGezien = $true
                     # Hadden we dit bestand al vooruit staan halen, dan die
                     # kopie nu meteen afbreken. Niet alleen om de ruimte:
                     # zolang wij de bron open hebben staan, komt de andere

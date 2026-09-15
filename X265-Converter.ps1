@@ -57,8 +57,8 @@ param(
 #  LEESMIJ-X265-Converter.md.
 # ---------------------------------------------------------------------
 $AppName    = 'X265 Converter'
-$AppVersion = '1.5'
-$AppDate    = '2026-09-14'
+$AppVersion = '1.6'
+$AppDate    = '2026-09-15'
 $AppTitle   = 'Video naar H.265 / HEVC'
 $AppStamp   = ('{0} {1} ({2})' -f $AppName, $AppVersion, $AppDate)
 
@@ -775,6 +775,11 @@ $script:SharedLocks = $true
 # afpakken - ook niet als de klokken van de twee machines uiteenlopen.
 $script:LockStaleMinutes = 15.0
 
+# Hoe lang de wachtrij leeg moet zijn voordat er uit zichzelf opnieuw naar
+# de bronmappen wordt gekeken. Alleen van belang als het vinkje 'elk uur
+# opnieuw kijken' aanstaat.
+$script:WatchMinutes = 60.0
+
 # Wachtrij bewaren over een herstart heen. Staat UIT: bij het opstarten
 # begint de lijst leeg, zodat een nieuwe scan niet bij de resten van de
 # vorige keer komt te staan. Met deze instelling uit wordt de wachtrij ook
@@ -915,7 +920,12 @@ $sync = [hashtable]::Synchronized(@{})
 $sync.ScanBusy          = $false
 $sync.ScanCancel        = $false
 $sync.ScanSettings      = @{}
-$sync.ScanMode          = 'scan'    # scan | verify
+$sync.ScanMode          = 'scan'    # scan | verify | opdracht
+
+# Is er tijdens deze ronde ergens een lock van een andere pc gezien? Zo ja,
+# dan is er aan het eind nog een keer rondkijken de moeite waard: die pc
+# kan bestanden hebben laten liggen die hier nooit in de lijst kwamen.
+$sync.LockGezien        = $false
 
 # --- converteren ----------------------------------------------------
 $sync.ConvBusy          = $false
@@ -1353,6 +1363,8 @@ function Write-Log {
             <CheckBox x:Name="chkDeleteOrig" Content="Origineel verwijderen na geslaagde verplaatsing" IsChecked="True"/>
             <CheckBox x:Name="chkSubs"       Content="Ondertitels meenemen naar de nieuwe naam" IsChecked="True"/>
             <CheckBox x:Name="chkExitAfter"  Content="Programma afsluiten na conversie stop" IsChecked="False"/>
+            <CheckBox x:Name="chkWatch"      Content="Elk uur opnieuw kijken als de wachtrij leeg is" IsChecked="False"
+                      ToolTip="Kijkt na een uur zonder werk of er nieuwe bestanden in de bronmappen staan en zet die meteen om. Geen meldingen; laat het gewoon aanstaan."/>
           </StackPanel>
         </Grid>
       </GroupBox>
@@ -2224,6 +2236,10 @@ $ScanWorker = {
         #  waarvan de bron er nog wel is blijft staan - die kan van een pc
         #  zijn die op dit moment aan het werk is.
         if ($locks.Count -gt 0 -and -not $sync.ScanCancel) {
+            # Er ligt een lock in deze map: er is dus een andere pc in de
+            # weer geweest. Aan het eind van de rit is nog een rondje
+            # kijken de moeite waard.
+            $sync.LockGezien = $true
             $opgeruimd = 0
             $stale = 15.0
             if ($st.LockStaleMinutes) { $stale = [double]$st.LockStaleMinutes }
@@ -2288,6 +2304,7 @@ $ScanWorker = {
                 Codec       = $info.Codec
                 IsHevc      = $isHevc
                 Include     = -not $isHevc
+                AutoQueue   = ([bool]$st.AutoQueue -and -not $isHevc)
             })
         }
 
@@ -3829,6 +3846,10 @@ $ConvertWorker = {
         $script:LockStale = $lockStale
         if ($lockAan) { W ("Gedeelde map: er wordt per bestand een lock geplaatst (verweesd na {0:N0} min)." -f $lockStale) }
 
+        # Niet resetten als er al een lock is gezien tijdens de scan: die
+        # waarneming telt net zo goed mee voor de ronde hierna.
+        if (-not $lockAan) { $sync.LockGezien = $false }
+
         while ($true) {
 
             Update-Timers
@@ -3907,6 +3928,7 @@ $ConvertWorker = {
                     $script:HuidigLock = $lock
                 }
                 elseif ($poging.Busy) {
+                    $sync.LockGezien = $true
                     # Hadden we dit bestand al vooruit staan halen, dan die
                     # kopie nu meteen afbreken. Niet alleen om de ruimte:
                     # zolang wij de bron open hebben staan, komt de andere
@@ -4778,6 +4800,8 @@ function Save-Settings {
             HandleSubs    = [bool]$ui.chkSubs.IsChecked
             SmartRetry    = [bool]$script:SmartRetry
             ExitAfterStop = [bool]$ui.chkExitAfter.IsChecked
+            WatchFolders  = [bool]$ui.chkWatch.IsChecked
+            WatchMinutes  = [double]$script:WatchMinutes
             SubExtensions = @($script:SubExtensions)
             MaxFailStreak = [int]$script:MaxFailStreak
             KeepAwakeSignal = [string]$script:KeepAwakeSignal
@@ -5035,6 +5059,11 @@ if ($saved -ne $null) {
         if ($saved.HandleSubs    -ne $null) { $ui.chkSubs.IsChecked       = [bool]$saved.HandleSubs }
         if ($saved.SmartRetry    -ne $null) { $script:SmartRetry = [bool]$saved.SmartRetry }
         if ($saved.ExitAfterStop -ne $null) { $ui.chkExitAfter.IsChecked  = [bool]$saved.ExitAfterStop }
+        if ($saved.WatchFolders -ne $null)  { $ui.chkWatch.IsChecked      = [bool]$saved.WatchFolders }
+        if ($saved.WatchMinutes) {
+            $m = [double]$saved.WatchMinutes
+            if ($m -ge 1.0 -and $m -le 10080.0) { $script:WatchMinutes = $m }
+        }
 
         # SkipHevc uit oudere versies wordt bewust genegeerd: HEVC
         # overslaan is nu vast gedrag.
@@ -5919,13 +5948,131 @@ function Start-ConversionIfIdle {
 }
 
 function Get-ScanSettings {
+    param([bool]$AutoQueue = $false)
     return @{
         Folders    = @($ui.lstFolders.Items | ForEach-Object { [string]$_ })
         Extensions = @($ui.txtExt.Text -split '[,;\s]+' | Where-Object { $_.Trim().Length -gt 0 })
         Recursive  = [bool]$script:Recursive
         VcpMarker  = [string]$script:VcpMarker
         LockStaleMinutes = [double]$script:LockStaleMinutes
+        AutoQueue  = $AutoQueue
     }
+}
+
+# ---------------------------------------------------------------------
+#  Nascan: eenmalig rondkijken na een ronde waarin locks zijn gezien
+#
+#  De mopronde binnen de conversie pakt alleen terug wat DEZE pc zelf
+#  had overgeslagen. Een andere pc kan echter ook dingen hebben laten
+#  liggen die hier nooit in de lijst kwamen: bestanden die tijdens de rit
+#  zijn bijgekomen, of die de ander halverwege heeft laten vallen toen
+#  hij werd gestopt.
+#
+#  Daarom eenmalig - en alleen eenmalig - de bronmappen opnieuw
+#  doorlopen, met wat er uitkomt meteen achteraan de wachtrij. Twee keer
+#  zou een rondzingende lus opleveren: de nascan ziet weer locks, start
+#  weer een nascan, en zo door zolang de andere pc bezig is.
+# ---------------------------------------------------------------------
+$script:NascanGedaan = $false
+
+# ---------------------------------------------------------------------
+#  Bronmappen in de gaten houden
+#
+#  Staat het vinkje aan, dan wordt er na een uur zonder werk uit zichzelf
+#  opnieuw naar de bronmappen gekeken. Wat er nieuw bij staat gaat meteen
+#  achteraan de wachtrij en de conversie begint vanzelf - zonder melding,
+#  zonder klik. Zo kan het vinkje gewoon aan blijven staan.
+#
+#  $script:WatchVanaf is het moment waarop het stil werd. Zodra er weer
+#  iets loopt gaat hij op $null en begint het uur straks opnieuw.
+# ---------------------------------------------------------------------
+$script:WatchVanaf = $null
+
+function Set-WatchExitCombinatie {
+    # Afsluiten na de conversie en elk uur opnieuw kijken sluiten elkaar
+    # uit: een afgesloten programma kijkt nergens meer naar. Het vinkje
+    # dat het laatst is aangezet wint, en het andere gaat uit en op slot,
+    # zodat de combinatie niet stilletjes niets doet.
+    if ([bool]$ui.chkWatch.IsChecked) {
+        $ui.chkExitAfter.IsChecked = $false
+        $ui.chkExitAfter.IsEnabled = $false
+    }
+    else {
+        $ui.chkExitAfter.IsEnabled = $true
+    }
+}
+
+function Start-WatchScan {
+
+    if ($sync.ScanBusy -or $sync.ConvBusy) { return $false }
+    if ($sync.Queue.Count -gt 0) { return $false }
+    if ($ui.lstFolders.Items.Count -eq 0) { return $false }
+    if (-not (Resolve-Ffmpeg)) { return $false }
+
+    $sync.ScanMode        = 'scan'
+    $sync.ScanSettings    = Get-ScanSettings -AutoQueue $true
+    $sync.ScanCancel      = $false
+    $sync.ScanTotal       = 0
+    $sync.ScanChecked     = 0
+    $sync.ScanFound       = 0
+    $sync.ScanSkippedHevc = 0
+    $sync.ScanSkippedVcp  = 0
+    $sync.ScanSkippedNoVid= 0
+    $sync.ScanStatus      = 'Kijken of er iets nieuws is…'
+
+    # Een nieuwe ronde uit zichzelf: de nascan mag daarna weer een keer.
+    # Bewust NIET resetten wanneer de nascan zelf een conversie start -
+    # dan zou nascan-conversie-nascan kunnen blijven rondzingen zolang de
+    # andere pc bezig is.
+    $script:NascanGedaan = $false
+
+    Write-Log ''
+    Write-Log ('--- Automatisch kijken ({0:N0} min zonder werk) -------------' -f $script:WatchMinutes)
+    Start-Worker $ScanWorker 'scan'
+    Update-Buttons
+    return $true
+}
+
+function Start-Nascan {
+
+    if ($script:NascanGedaan) { return $false }
+    if ($sync.ScanBusy -or $sync.ConvBusy) { return $false }
+    if ($ui.lstFolders.Items.Count -eq 0) { return $false }
+    if (-not (Resolve-Ffmpeg)) { return $false }
+
+    # Regels waarvan het oordeel inmiddels achterhaald kan zijn eerst uit
+    # de lijst halen, anders slaat de scan ze over (het pad staat immers
+    # al in de lijst) en blijven ze voor altijd op 'Andere pc bezig'
+    # staan. Ze komen vanzelf terug als het bestand er nog is.
+    $weg = 0
+    foreach ($j in @($jobs)) {
+        if ($j.Status -eq 'Andere pc bezig' -or $j.Status -eq 'Niet gevonden') {
+            if (Remove-JobRow $j) { $weg++ }
+        }
+    }
+
+    $script:NascanGedaan  = $true
+    $sync.ScanMode        = 'scan'
+    $sync.ScanSettings    = Get-ScanSettings -AutoQueue $true
+    $sync.ScanCancel      = $false
+    $sync.ScanTotal       = 0
+    $sync.ScanChecked     = 0
+    $sync.ScanFound       = 0
+    $sync.ScanSkippedHevc = 0
+    $sync.ScanSkippedVcp  = 0
+    $sync.ScanSkippedNoVid= 0
+    $sync.ScanStatus      = 'Nakijken…'
+
+    Write-Log ''
+    Write-Log '--- Nascan: er zijn locks van een andere pc gezien ---------'
+    if ($weg -gt 0) {
+        Write-Log ("{0} regel(s) die op een andere pc stonden opnieuw aangeboden." -f $weg)
+    }
+    Write-Log 'De bronmappen worden nog een keer doorlopen; wat er nog ligt gaat meteen in de wachtrij.'
+    Start-Worker $ScanWorker 'scan'
+    Update-Buttons
+    Set-Status 'Nascan: kijken of er nog iets is blijven liggen.'
+    return $true
 }
 
 function Get-ConvertSettings {
@@ -6039,7 +6186,13 @@ function Start-VerifyRound {
 
 # ---- starten / toevoegen --------------------------------------------
 
+$ui.chkWatch.Add_Checked({   Set-WatchExitCombinatie; $script:WatchVanaf = Get-Date; Request-Save })
+$ui.chkWatch.Add_Unchecked({ Set-WatchExitCombinatie; $script:WatchVanaf = $null;     Request-Save })
+
 $ui.btnStart.Add_Click({
+
+    # Handmatig starten is een nieuwe ronde: de nascan mag daarna weer.
+    $script:NascanGedaan = $false
 
     # ---- 1. opgeruimde regels weghalen ------------------------------
     #  Alles wat klaar is en alles wat al HEVC is verdwijnt uit de lijst
@@ -6097,10 +6250,10 @@ $ui.btnStart.Add_Click({
     if (-not (Test-DirWritable $st.WorkDir)) {
         $terug = Join-Path $env:TEMP 'X265-Converter'
         if (Test-DirWritable $terug) {
-            [System.Windows.MessageBox]::Show(
-                ("De werkmap is niet bruikbaar:`n{0}`n`nEr wordt uitgeweken naar:`n{1}" -f $st.WorkDir, $terug),
-                'Werkmap', 'OK', 'Warning') | Out-Null
+            # Geen venster: dit heeft zichzelf opgelost, en een klik
+            # vragen voor iets wat al geregeld is houdt alleen maar op.
             Write-Log ("Werkmap {0} is niet bruikbaar; uitgeweken naar {1}." -f $st.WorkDir, $terug) 'WAARS'
+            Set-Status ("Werkmap niet bruikbaar; uitgeweken naar {0}." -f $terug)
             $ui.txtWork.Text = $terug
             $st.WorkDir      = $terug
         }
@@ -6119,14 +6272,17 @@ $ui.btnStart.Add_Click({
     $qBytes = [double]0
     foreach ($j in (Get-QueueSnapshot)) { if ($j -ne $null) { $qBytes += $j.SizeBytes } }
 
-    $msg = "{0} bestand(en) in de wachtrij, {1}, {2} speelduur.`n`nEncoder: {3}`nPreset : {4}`nCRF    : {5}`nGeluid : {6}`n`nOriginelen verwijderen na succes : {7}`nOndertitels meenemen             : {8}`nAfsluiten na stop                : {9}`n`nStarten?" -f `
-        $qCount, (Format-Size $qBytes), (Format-Span $qSecs), $st.Codec, $st.Preset, $st.Crf,
-        ([string]$ui.cmbAudio.SelectedItem),
-        $(if ($st.DeleteOriginal) { 'JA' } else { 'nee' }),
-        $(if ($st.HandleSubs)     { 'JA' } else { 'nee' }),
-        $(if ($ui.chkExitAfter.IsChecked) { 'JA' } else { 'nee' })
-
-    if ([System.Windows.MessageBox]::Show($msg, 'Conversie starten', 'OKCancel', 'Question') -ne 'OK') { return }
+    # Geen bevestigingsvenster meer: op Start drukken IS de bevestiging.
+    # Het overzicht gaat naar de log, zodat je achteraf nog kunt zien met
+    # welke instellingen een run is begonnen.
+    Write-Log ("Start: {0} bestand(en), {1}, {2} speelduur." -f `
+        $qCount, (Format-Size $qBytes), (Format-Span $qSecs))
+    Write-Log ("Encoder {0}, preset {1}, CRF/kwaliteit {2}, geluid {3}." -f `
+        $st.Codec, $st.Preset, $st.Crf, ([string]$ui.cmbAudio.SelectedItem))
+    Write-Log ("Origineel verwijderen: {0}   ondertitels meenemen: {1}   afsluiten na stop: {2}" -f `
+        $(if ($st.DeleteOriginal) { 'ja' } else { 'nee' }),
+        $(if ($st.HandleSubs)     { 'ja' } else { 'nee' }),
+        $(if ($ui.chkExitAfter.IsChecked) { 'ja' } else { 'nee' }))
 
     # nieuwe run: KeepAwake mag straks opnieuw worden gestopt
     $script:KeepAwakeStopped = $false
@@ -6329,7 +6485,7 @@ function Invoke-Tick {
     }
     if ($autoQueue.Count -gt 0) {
         [void](Add-ToQueueBack $autoQueue)
-        Write-Log ("{0} bestand(en) van de opdrachtregel achteraan de wachtrij gezet." -f $autoQueue.Count)
+        Write-Log ("{0} bestand(en) automatisch achteraan de wachtrij gezet." -f $autoQueue.Count)
         Start-ConversionIfIdle
     }
     if ($added -gt 0) { Request-Save }
@@ -6337,6 +6493,23 @@ function Invoke-Tick {
     # ---------- opdrachten van een tweede aanroep -------------------
     # Read-Inbox houdt zichzelf op een ronde per twee seconden.
     Read-Inbox
+
+    # ---------- elk uur opnieuw kijken ------------------------------
+    #  De klok loopt alleen als er niets te doen is. Zodra er weer iets
+    #  draait of er staat weer werk klaar, begint het uur opnieuw.
+    if ([bool]$ui.chkWatch.IsChecked) {
+        if ($sync.ScanBusy -or $sync.ConvBusy -or $sync.Queue.Count -gt 0) {
+            $script:WatchVanaf = $null
+        }
+        elseif ($script:WatchVanaf -eq $null) {
+            $script:WatchVanaf = Get-Date
+        }
+        elseif (((Get-Date) - $script:WatchVanaf).TotalMinutes -ge [double]$script:WatchMinutes) {
+            $script:WatchVanaf = $null
+            [void](Start-WatchScan)
+        }
+    }
+    elseif ($script:WatchVanaf -ne $null) { $script:WatchVanaf = $null }
 
     # ---------- uitkomsten van de controleronde ---------------------
     $verified = 0
@@ -6729,6 +6902,10 @@ function Invoke-Tick {
 
         $emergency = [bool]$sync.EmergencyStop
 
+        # Nu vastleggen: hieronder worden deze vlaggen gewist, en voor de
+        # nascan moet ik weten of de gebruiker zelf heeft gestopt.
+        $gestopt = ([bool]$sync.Cancel -or [bool]$sync.StopAfterCurrent)
+
         $sync.ConvBusy         = $false
         $convBusy              = $false
         $sync.StopAfterCurrent = $false
@@ -6791,8 +6968,21 @@ function Invoke-Tick {
             Set-Status $eind
             Set-Title 'gereed'
 
+            # ---- nog een keer rondkijken -----------------------------
+            #  Alleen als er tijdens deze ronde ergens een lock van een
+            #  andere pc is gezien, en alleen als de gebruiker niet zelf
+            #  heeft gestopt. Start-Nascan doet het hoogstens een keer.
+            #
+            #  Dit staat bewust VOOR de afsluitteller: die wacht vanzelf
+            #  op een lopende scan, en vervalt zodra de conversie weer
+            #  aanslaat.
+            $nascan = $false
+            if (-not $gestopt -and [bool]$sync.LockGezien) {
+                $nascan = Start-Nascan
+            }
+
             # ---- afsluiten na stop, als dat is aangevinkt -----------
-            if ([bool]$ui.chkExitAfter.IsChecked) {
+            if (-not $nascan -and [bool]$ui.chkExitAfter.IsChecked) {
                 $script:ExitAt      = (Get-Date).AddSeconds(10)
                 $script:ExitPending = $true
                 Write-Log 'Afsluiten na conversie is aangevinkt; het programma sluit over 10 seconden.' 'WAARS'
@@ -6987,6 +7177,14 @@ $win.Add_Loaded({
         } else {
             Write-Log ("De opdracht van de opdrachtregel kon niet worden opgeslagen: {0}" -f $In) 'WAARS'
         }
+    }
+
+    # Afsluiten-na-conversie en elk-uur-kijken sluiten elkaar uit; de
+    # bewaarde stand kan die combinatie wel bevatten.
+    Set-WatchExitCombinatie
+    if ([bool]$ui.chkWatch.IsChecked) {
+        $script:WatchVanaf = Get-Date
+        Write-Log ('Elk uur opnieuw kijken staat aan: na {0:N0} minuten zonder werk worden de bronmappen opnieuw doorlopen.' -f $script:WatchMinutes)
     }
 
     $ui.stTotals.Text = Format-Totals
