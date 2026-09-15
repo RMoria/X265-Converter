@@ -802,6 +802,49 @@ $win.Add_Loaded({
         }
     }
 
+    # ---- wat heeft de updater bij deze start gedaan? ---------------
+    #
+    #  Bijwerken.ps1 draait vanuit de starter, in een venster dat binnen
+    #  een seconde weg is. Zonder dit stukje is er geen enkele manier om
+    #  te zien of hij iets heeft gevonden, er niet bij kon, of helemaal
+    #  niet is gedraaid - en dat laatste is precies wat er gebeurt als
+    #  het programma niet via X265-Converter.cmd wordt gestart.
+    $updLog = ''
+    foreach ($k in @((Join-Path $ScriptDir 'X265-Bijwerken.log'),
+                     (Join-Path $DataDir  'X265-Bijwerken.log'),
+                     (Join-Path (Join-Path $env:LOCALAPPDATA 'X265-Converter') 'X265-Bijwerken.log'))) {
+        if ($k -and (Test-PathSafe $k)) { $updLog = $k; break }
+    }
+
+    if (-not $updLog) {
+        Write-Log 'Bijwerken: nog nooit gedraaid. Start via X265-Converter.cmd om automatisch bij te werken.' 'WAARS'
+    }
+    else {
+        $verse = $false
+        try { $verse = ((Get-Date) - (Get-Item -LiteralPath $updLog).LastWriteTime).TotalMinutes -lt 5 } catch { }
+
+        if (-not $verse) {
+            Write-Log ('Bijwerken: is bij deze start niet gedraaid. Start via X265-Converter.cmd, anders blijft deze pc op de huidige versie staan. Logboek: {0}' -f $updLog) 'WAARS'
+        }
+        else {
+            try {
+                $regels = @(Get-Content -LiteralPath $updLog -Tail 40 -ErrorAction Stop)
+                # alleen de laatste ronde tonen
+                $start = -1
+                for ($i = $regels.Count - 1; $i -ge 0; $i--) {
+                    if ($regels[$i] -match 'bijwerken gestart') { $start = $i; break }
+                }
+                if ($start -ge 0) { $regels = $regels[$start..($regels.Count - 1)] }
+                foreach ($r in $regels) {
+                    $t = ([string]$r)
+                    if ($t.Length -gt 20) { $t = $t.Substring(20) } else { $t = $t.Trim() }
+                    if ($t) { Write-Log ('Bijwerken: ' + $t) }
+                }
+            }
+            catch { Write-Log ('Bijwerken: logboek kon niet worden gelezen ({0}).' -f $updLog) 'WAARS' }
+        }
+    }
+
     # Afsluiten-na-conversie en elk-uur-kijken sluiten elkaar uit; de
     # bewaarde stand kan die combinatie wel bevatten.
     Set-WatchExitCombinatie

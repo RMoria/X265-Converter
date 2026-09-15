@@ -67,18 +67,23 @@ if not exist "%PWSH%" set "PWSH=powershell.exe"
 rem ===================================================================
 rem  Bijwerken naar de nieuwste uitgebrachte versie
 rem
-rem  Bijwerken.ps1 kijkt welke versietag er op GitHub staat en haalt die
-rem  op als hij nieuwer is. Doet niets als er al een instantie draait, en
-rem  niets als het niet lukt - geen netwerk, geen rechten. Bijwerken mag
-rem  nooit in de weg zitten van gewoon kunnen starten.
+rem  Het script kijkt zelf welke versietag er op GitHub staat en haalt
+rem  die op als hij nieuwer is. Doet niets als er al een instantie
+rem  draait, en niets als het niet lukt - geen netwerk, geen rechten.
+rem  Bijwerken mag nooit in de weg zitten van gewoon kunnen starten.
+rem
+rem  Dit zat eerder in een los Bijwerken.ps1. Dat bestand bleek bij het
+rem  overzetten naar een tweede pc niet mee te gaan, en dan werkt er
+rem  niets bij zonder dat iemand dat merkt. Nu zit alles in dit ene
+rem  PowerShell-bestand.
 rem ===================================================================
 set "DOUPDATE=1"
 if /i "%~1"=="-GeenUpdate" (
     set "DOUPDATE="
     shift
 )
-if defined DOUPDATE if exist "%~dp0Bijwerken.ps1" (
-    "%PWSH%" -NoProfile -ExecutionPolicy Bypass -File "%~dp0Bijwerken.ps1"
+if defined DOUPDATE (
+    "%PWSH%" -NoProfile -ExecutionPolicy Bypass -File "%PS1%" -Bijwerken
 )
 
 rem enkele aanhalingstekens verdubbelen voor PowerShell

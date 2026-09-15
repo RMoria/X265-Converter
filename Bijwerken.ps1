@@ -45,15 +45,65 @@ try {
         [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 } catch { }
 
+# Zit er een bedrijfsproxy tussen, dan moet die de aanmelding van de
+# ingelogde gebruiker meekrijgen. Zonder dit komt er een 407 terug en
+# lijkt het alsof GitHub onbereikbaar is.
+try {
+    $pr = [System.Net.WebRequest]::GetSystemWebProxy()
+    $pr.Credentials = [System.Net.CredentialCache]::DefaultNetworkCredentials
+    [System.Net.WebRequest]::DefaultWebProxy = $pr
+} catch { }
+
 # Welke bestanden meegaan. De .cmd staat er bewust apart in: die wordt
 # nooit rechtstreeks overschreven (zie Plaats-Nieuw).
 $script:Bestanden = @('X265-Converter.ps1', 'LEESMIJ-X265-Converter.md', 'Bijwerken.ps1')
 $script:CmdNaam   = 'X265-Converter.cmd'
 
+# ---------------------------------------------------------------------
+#  Alles ook naar een logboek
+#
+#  Dit is geen luxe. De updater draait vanuit de starter, in een venster
+#  dat binnen een seconde dichtklapt. Zonder logboek is er geen enkel
+#  verschil te zien tussen "niets te doen", "kon er niet bij" en "is
+#  helemaal niet gedraaid" - en dan is er ook niets aan te repareren.
+# ---------------------------------------------------------------------
+$script:LogPad = ''
+try {
+    $script:LogPad = Join-Path $Map 'X265-Bijwerken.log'
+    # Past er niets in de programmamap, dan naar de profielmap.
+    $probe = Join-Path $Map ('.upd_' + [guid]::NewGuid().ToString('N') + '.tmp')
+    Set-Content -LiteralPath $probe -Value 'x' -ErrorAction Stop
+    Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+}
+catch {
+    try {
+        $alt = Join-Path $env:LOCALAPPDATA 'X265-Converter'
+        if (-not (Test-Path -LiteralPath $alt)) { New-Item -ItemType Directory -Path $alt -Force | Out-Null }
+        $script:LogPad = Join-Path $alt 'X265-Bijwerken.log'
+    }
+    catch { $script:LogPad = '' }
+}
+
 function Schrijf {
     param([string]$Tekst, [string]$Kleur = 'Gray')
-    if ($Stil) { return }
-    Write-Host $Tekst -ForegroundColor $Kleur
+
+    if (-not $Stil) { Write-Host $Tekst -ForegroundColor $Kleur }
+
+    if ($script:LogPad) {
+        try {
+            # Niet laten aangroeien tot in het oneindige.
+            if (Test-Path -LiteralPath $script:LogPad) {
+                $g = (Get-Item -LiteralPath $script:LogPad).Length
+                if ($g -gt 200000) {
+                    $houd = @(Get-Content -LiteralPath $script:LogPad -Tail 300)
+                    Set-Content -LiteralPath $script:LogPad -Value $houd -Encoding UTF8
+                }
+            }
+            Add-Content -LiteralPath $script:LogPad -Encoding UTF8 `
+                -Value ('{0}  {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Tekst)
+        }
+        catch { }
+    }
 }
 
 # ---------------------------------------------------------------------
@@ -124,13 +174,23 @@ function Test-DraaitAl {
 #  git opzoeken en zo nodig installeren
 # ---------------------------------------------------------------------
 function Get-GitPad {
+
     $c = Get-Command git.exe -ErrorAction SilentlyContinue
     if ($c) { return $c.Source }
-    foreach ($p in @(
-        (Join-Path $env:ProgramFiles 'Git\cmd\git.exe'),
-        (Join-Path ${env:ProgramFiles(x86)} 'Git\cmd\git.exe'),
-        (Join-Path $env:LOCALAPPDATA 'Programs\Git\cmd\git.exe'))) {
-        if ($p -and (Test-Path -LiteralPath $p)) { return $p }
+
+    # Op de gebruikelijke plekken kijken. Elke basis apart nakijken: op een
+    # machine zonder ProgramFiles(x86) is die omgevingsvariabele leeg, en
+    # Join-Path met een lege basis gooit een fout die anders de hele
+    # updater zou omvergooien.
+    foreach ($basis in @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:LOCALAPPDATA)) {
+        if ([string]::IsNullOrWhiteSpace($basis)) { continue }
+        foreach ($staart in @('Git\cmd\git.exe', 'Programs\Git\cmd\git.exe')) {
+            try {
+                $p = Join-Path $basis $staart
+                if (Test-Path -LiteralPath $p) { return $p }
+            }
+            catch { }
+        }
     }
     return ''
 }
@@ -385,6 +445,8 @@ function Plaats-Nieuw {
 # ---------------------------------------------------------------------
 function Invoke-Bijwerken {
 
+    Schrijf ('--- bijwerken gestart in {0} ---' -f $Map) 'DarkGray'
+
     $hoofdPad = Join-Path $Map 'X265-Converter.ps1'
     $lokaal   = Get-VersieUitScript $hoofdPad
     if ($lokaal -eq $null) {
@@ -464,5 +526,16 @@ function Invoke-Bijwerken {
 # Niet uitvoeren als dit bestand alleen wordt ingeladen om de functies te
 # kunnen testen.
 if (-not $env:X265_BIJWERKEN_ALLEEN_LADEN) {
-    [void](Invoke-Bijwerken)
+    try {
+        $veranderd = Invoke-Bijwerken
+        if ($veranderd) { Schrijf 'Klaar: er is bijgewerkt.' 'Green' }
+        else            { Schrijf 'Klaar: er is niets veranderd.' 'DarkGray' }
+    }
+    catch {
+        # Bijwerken mag NOOIT het starten in de weg zitten. Wat hier ook
+        # misgaat, het wordt opgeschreven en daarna gaat het programma
+        # gewoon door met de versie die er staat.
+        Schrijf ("Bijwerken liep vast: {0}" -f $_.Exception.Message) 'Red'
+        try { Schrijf ($_.ScriptStackTrace) 'DarkGray' } catch { }
+    }
 }

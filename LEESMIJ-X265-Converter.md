@@ -1,8 +1,8 @@
 # Video naar H.265 / HEVC — PowerShell GUI
 
-**Versie 1.6 (15 september 2026)**
+**Versie 1.8 (15 september 2026)**
 
-Het versienummer staat achter in de venstertitel (`… [v1.6]`), als eerste regel
+Het versienummer staat achter in de venstertitel (`… [v1.8]`), als eerste regel
 in de log bij het opstarten, bovenaan `X265-Converter.error.log` en als `Version`
 in het instellingenbestand. Bij een melding is dat het eerste wat je wilt weten.
 Bijwerken gaat met `$AppVersion` en `$AppDate` bovenaan het script: tweede cijfer
@@ -11,6 +11,31 @@ erbij voor nieuw gedrag, derde cijfer voor een reparatie.
 Opvolger van `convert.bat`. Eén PowerShell-script met een grafische interface.
 
 ## Wat er per versie is veranderd
+
+### 1.8 — 15 september 2026
+
+- **Het bijwerken zit nu in `X265-Converter.ps1` zelf**, als `-Bijwerken`. Het
+  losse `Bijwerken.ps1` is vervallen. Dat bestand ging bij het handmatig
+  overzetten naar een tweede pc niet mee, en dan werkt er niets bij zonder dat
+  iemand het merkt — precies wat er gebeurde. Eén bestand is hier geen
+  schoonheidsideaal maar een voorwaarde om het betrouwbaar te krijgen.
+
+### 1.7 — 15 september 2026
+
+- **Bijwerken houdt nu een logboek bij**: `X265-Bijwerken.log` naast de
+  instellingen, met per ronde wat er is gevonden en besloten. Zonder dat was er
+  geen verschil te zien tussen "niets te doen", "kon er niet bij" en "is
+  helemaal niet gedraaid" — het venster van de starter klapt binnen een seconde
+  dicht.
+- **Het programma meldt bij het opstarten wat de updater heeft gedaan**, in het
+  logvenster. Is hij bij deze start niet gedraaid, dan staat dat er ook — dat
+  gebeurt als het programma niet via `X265-Converter.cmd` wordt gestart.
+- **Een vastloper in de updater houdt het starten niet meer tegen** en wordt
+  opgeschreven in plaats van stilletjes doorgeslikt.
+- **Het opzoeken van git klapte om** op een machine waar `ProgramFiles(x86)`
+  niet bestaat. Dat nam de hele updater mee.
+- **Een bedrijfsproxy krijgt de aanmelding van de ingelogde gebruiker mee**,
+  anders komt er een 407 terug en lijkt GitHub onbereikbaar.
 
 ### 1.6 — 15 september 2026
 
@@ -190,8 +215,14 @@ erg dan een programma dat niet opstart.
 
 ## Zichzelf bijwerken
 
-Bij elke start kijkt `Bijwerken.ps1` of er op GitHub een nieuwere **uitgebrachte
-versie** staat. Zo ja, dan wordt die opgehaald en vervangen voordat het
+Bij elke start kijkt het script zelf of er op GitHub een nieuwere
+**uitgebrachte versie** staat. Dat gebeurt met een aparte, korte aanroep:
+
+```
+X265-Converter.ps1 -Bijwerken
+```
+
+Die kijkt, haalt zo nodig op, en stopt weer — er komt geen venster aan te pas. Zo ja, dan wordt die opgehaald en vervangen voordat het
 programma begint. Zo niet, dan gebeurt er niets en start het gewoon door.
 
 Overslaan kan:
@@ -219,8 +250,9 @@ blijven de andere pc's dus op de oude versie staan.
 
 ### Wat er wordt vervangen, en wat niet
 
-`X265-Converter.ps1`, `LEESMIJ-X265-Converter.md` en `Bijwerken.ps1` worden
-vervangen. De vorige versie gaat eerst naar `vorige-versie\` ernaast, dus je
+`X265-Converter.ps1` en `LEESMIJ-X265-Converter.md` worden vervangen. Het
+programma bevat de updater zelf, dus met het hoofdbestand komt die automatisch
+mee. De vorige versie gaat eerst naar `vorige-versie\` ernaast, dus je
 kunt altijd terug.
 
 **De starter wordt nooit rechtstreeks overschreven.** `cmd.exe` leest een
@@ -230,6 +262,33 @@ cmd op de oude positie verder in de nieuwe inhoud en voert half afgekapte regels
 uit. De nieuwe starter wordt daarom als `X265-Converter.cmd.nieuw` klaargezet;
 bij de volgende start wisselt een klein hulpje hem om — dat wacht eerst tot het
 oude venster weg is.
+
+### Waar je kunt zien wat er is gebeurd
+
+`X265-Bijwerken.log`, naast de instellingen. Elke ronde begint met een regel
+`--- bijwerken gestart ---` en eindigt met `Klaar: …`, met daartussen wat er is
+gevonden en besloten. Het logboek wordt afgekapt als het boven de 200 kB komt.
+
+Bij het opstarten zet het programma de laatste ronde ook in zijn eigen
+logvenster, met `Bijwerken:` ervoor. Staat daar **"is bij deze start niet
+gedraaid"**, dan is het programma niet via `X265-Converter.cmd` gestart — via
+een snelkoppeling rechtstreeks naar het `.ps1`, bijvoorbeeld. Dan wordt er nooit
+bijgewerkt.
+
+Handmatig nakijken, met alles in beeld:
+
+```
+cd \Tools\2-265
+.\X265-Converter.ps1 -Bijwerken -AlleenKijken
+```
+
+Dat kijkt en vertelt, maar vervangt niets. Met `-Opnieuw` in plaats van
+`-AlleenKijken` wordt de nieuwste versie opgehaald ook als je al op dezelfde
+versie zit. `-Stil` houdt het scherm leeg en schrijft alleen in het logboek.
+
+> **De controle gebeurt alleen bij het starten.** Een pc die dagenlang blijft
+> draaien — bijvoorbeeld met "elk uur opnieuw kijken" aan — blijft dus op zijn
+> versie staan tot je hem een keer opnieuw start.
 
 ### Wanneer er niets gebeurt
 
