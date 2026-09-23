@@ -1,8 +1,8 @@
 # Video naar H.265 / HEVC — PowerShell GUI
 
-**Versie 1.8 (15 september 2026)**
+**Versie 1.9 (23 september 2026)**
 
-Het versienummer staat achter in de venstertitel (`… [v1.8]`), als eerste regel
+Het versienummer staat achter in de venstertitel (`… [v1.9]`), als eerste regel
 in de log bij het opstarten, bovenaan `X265-Converter.error.log` en als `Version`
 in het instellingenbestand. Bij een melding is dat het eerste wat je wilt weten.
 Bijwerken gaat met `$AppVersion` en `$AppDate` bovenaan het script: tweede cijfer
@@ -11,6 +11,27 @@ erbij voor nieuw gedrag, derde cijfer voor een reparatie.
 Opvolger van `convert.bat`. Eén PowerShell-script met een grafische interface.
 
 ## Wat er per versie is veranderd
+
+### 1.9 — 23 september 2026
+
+- **Bestand overgeslagen omdat een andere pc ermee bezig was? Meteen achteraan
+  de wachtrij**, in plaats van pas aan het eind van de ronde. Was het maar een
+  hapering of is de andere pc net klaar, dan wordt het zo binnen deze ronde nog
+  een keer geprobeerd, zonder op de rest te hoeven wachten. Per bestand
+  hoogstens één herkansing, anders zou een bestand dat de hele ronde bezet
+  blijft de rest kunnen ophouden.
+- **"Elk uur opnieuw kijken" heeft nu een invoerveld voor het aantal uur**
+  (1-168, standaard 24) in plaats van een vast uur zonder dat je daar iets aan
+  kon doen.
+- **`AudioTailTolerance` goed gezet.** Dit veld zit niet in de GUI en kon dus
+  alleen de vaste standaard van het moment van installeren hebben. Op een
+  aantal pc's stond daardoor nog een oudere waarde (5 s) uit de tijd voordat
+  dit werd vastgezet op 2 s. Instellingenbestanden van vóór deze versie worden
+  bij het opstarten automatisch rechtgezet — zowel dit veld als het
+  uur-interval hierboven, dat tot nu toe altijd op 1 uur stond.
+- Nieuwe correcties op oudere instellingenbestanden komen voortaan bij deze
+  lijst: `Load-Settings` in `part6.ps1` houdt per versie bij wat er is
+  rechtgezet.
 
 ### 1.8 — 15 september 2026
 
@@ -327,11 +348,14 @@ versie=X265 Converter 1.3 (2026-09-14)
 ```
 
 Komt de tweede pc bij dat bestand, dan ziet hij het lock, zet de regel op
-**Andere pc bezig** en gaat meteen door naar het volgende vrije bestand. Aan het
-eind van de rit wordt er nog **één keer** langs de overgeslagen bestanden
-gelopen — de andere pc kan inmiddels gestopt zijn. Blijft het dan nog bezet, dan
-laat hij het erbij; blijven wachten heeft geen zin, want een bestand dat de ander
-wél afmaakt komt niet meer terug (het origineel is dan weg).
+**Andere pc bezig** en zet het bestand meteen achteraan de eigen wachtrij — niet
+pas aan het eind van de ronde. Is het maar een hapering geweest, of is de
+andere pc net klaar of gestopt, dan lukt het zo alsnog binnen dezelfde ronde,
+zonder dat er op de rest gewacht hoeft te worden. Per bestand gebeurt dat
+hoogstens één keer per ronde; blijft het dan nog bezet, dan laat hij het erbij
+— blijven proberen heeft geen zin, want een bestand dat de ander wél afmaakt
+komt niet meer terug (het origineel is dan weg). De nascan hieronder pakt het
+dan alsnog op zodra er weer ruimte is.
 
 Er wordt ook vlak voor het oppakken nog gekeken of de bron er überhaupt nog is.
 De lijst is een momentopname van de scan, en op een gedeelde map kan die binnen
@@ -439,10 +463,11 @@ van een pc zijn die op dit moment aan het werk is.
 
 ### Nascan na een ronde met locks
 
-De mopronde binnen een conversie pakt alleen terug wat **deze** pc zelf had
-overgeslagen. Een andere pc kan echter dingen hebben laten liggen die hier nooit
-in de lijst kwamen: bestanden die tijdens de rit zijn bijgekomen, of die de ander
-halverwege heeft laten vallen toen hij werd gestopt.
+De herkansing binnen een conversie (zie hierboven) pakt alleen terug wat
+**deze** pc zelf had overgeslagen, en maar één keer per bestand. Een andere pc
+kan echter dingen hebben laten liggen die hier nooit in de lijst kwamen:
+bestanden die tijdens de rit zijn bijgekomen, of die de ander halverwege heeft
+laten vallen toen hij werd gestopt.
 
 Daarom: is er tijdens de ronde ergens een lock-bestand gezien — bij het scannen
 of bij het oppakken — dan worden aan het eind de bronmappen nog één keer
@@ -459,24 +484,28 @@ Er wordt geen nascan gedaan als je zelf hebt gestopt, en niet na een noodstop.
 
 ### Elk uur opnieuw kijken
 
-Een vinkje in het instellingenpaneel: **"Elk uur opnieuw kijken als de wachtrij
-leeg is"**. Standaard uit.
+Een vinkje in het instellingenpaneel: **"Opnieuw kijken als de wachtrij leeg
+is, elke … uur"**, met een invoerveld ernaast voor het aantal uur (1-168,
+standaard 24). Het vinkje staat standaard uit.
 
-Staat het aan, dan wordt er na een uur zonder werk uit zichzelf naar de
-bronmappen gekeken. Nieuwe bestanden gaan meteen in de wachtrij en de conversie
-begint vanzelf — geen meldingen, geen klik op Start. Zo kun je het aan laten
-staan en worden nieuwe bestanden automatisch omgezet.
+Staat het aan, dan wordt er na het ingestelde aantal uur zonder werk uit
+zichzelf naar de bronmappen gekeken. Nieuwe bestanden gaan meteen in de
+wachtrij en de conversie begint vanzelf — geen meldingen, geen klik op Start.
+Zo kun je het aan laten staan en worden nieuwe bestanden automatisch omgezet.
 
 De klok loopt alleen als er niets te doen is. Zodra er weer een scan of conversie
-draait, of er staat weer iets in de wachtrij, begint het uur opnieuw. Levert een
-ronde niets op, dan gebeurt er niets en begint het uur gewoon opnieuw.
+draait, of er staat weer iets in de wachtrij, begint de klok opnieuw. Levert een
+ronde niets op, dan gebeurt er niets en begint het aftellen gewoon opnieuw.
 
 > **Dit sluit "afsluiten na conversie stop" uit.** Een afgesloten programma kijkt
 > nergens meer naar. Zet je het ene vinkje aan, dan gaat het andere uit en op
 > slot, zodat de combinatie niet stilletjes niets doet.
 
-Het uur zelf staat als `WatchMinutes` in het instellingenbestand (minimaal 1,
-hoogstens een week), het vinkje als `WatchFolders`.
+Het aantal uur staat als `WatchMinutes` in het instellingenbestand (in minuten
+bewaard; minimaal 1 uur, hoogstens een week), het vinkje als `WatchFolders`.
+Instellingenbestanden van vóór v1.9 stonden vast op 1 uur; die worden bij het
+opstarten teruggezet naar de nieuwe standaard van 24 uur (zie de v1.9-regel
+hierboven).
 
 ## De bron eerst lokaal zetten
 
@@ -1006,7 +1035,10 @@ Instellingen: `CheckAudioTail` (aan), `AudioTailTolerance` (2 s — vanaf welk
 tekort de staart het opvullen waard is), `AudioTailMargin` (2 s — vanaf hoeveel
 achterstand op de bron het verlies heet), `AudioLossLimit` (30 s — vanaf hoeveel
 verlies het bestand wordt afgekeurd), `PadShortAudio` (aan) en `VcpMarker`
-(`VCP`).
+(`VCP`). Geen van deze staat in de GUI; met de hand aan te passen in het
+instellingenbestand. `AudioTailTolerance` wordt sinds v1.9 bij het opstarten
+teruggezet naar 2 s als een ouder instellingenbestand nog een afwijkende
+waarde had — zie de v1.9-regel in het overzicht bovenaan.
 
 ## Welke sporen meegaan naar de MKV
 

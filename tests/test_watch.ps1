@@ -111,6 +111,27 @@ Check 'wordt bewaard'              ((Get-Content -Raw $SrcDir/part6.ps1) -match 
 Check 'en teruggezet'              ((Get-Content -Raw $SrcDir/part6.ps1) -match '\$ui\.chkWatch\.IsChecked      = \[bool\]\$saved\.WatchFolders')
 ''
 
+'--- 6b. invoerveld voor het aantal uur (1-168, standaard 24) ---'
+Check 'invoerveld bestaat'          ((Get-Content -Raw $SrcDir/part3.ps1) -match 'x:Name="txtWatchHours"')
+Check 'standaard op 24 in de GUI'   ((Get-Content -Raw $SrcDir/part3.ps1) -match 'x:Name="txtWatchHours"[^>]*Text="24"')
+Check 'standaard 24 uur intern'     ($script:WatchMinutes -eq 1440.0)                          "($script:WatchMinutes)"
+Check '1 uur mag net'               ((Set-WatchHoursText '1')    -eq 1   -and $script:WatchMinutes -eq 60.0)
+Check '168 uur mag net'             ((Set-WatchHoursText '168')  -eq 168 -and $script:WatchMinutes -eq 10080.0)
+Check 'boven de 168 wordt geklemd'  ((Set-WatchHoursText '200')  -eq 168)
+Check '0 uur -> standaard (24)'     ((Set-WatchHoursText '0')    -eq 24)
+Check 'onzin -> standaard (24)'     ((Set-WatchHoursText 'abc')  -eq 24)
+Check 'kommagetal wordt afgerond'   ((Set-WatchHoursText '12.6') -eq 13)
+Check 'wordt in minuten bewaard'    ((Get-Content -Raw $SrcDir/part6.ps1) -match 'WatchMinutes  = \[double\]\$script:WatchMinutes')
+Check 'reageert bij het verlaten van het veld' ($p7 -match 'txtWatchHours\.Add_LostFocus')
+''
+
+'--- 6c. oude instellingen worden bij het inlezen rechtgezet (v1.9) ---'
+$p6 = Get-Content -Raw $SrcDir/part6.ps1
+Check 'kijkt naar de bewaarde versie'  ($p6 -match "opgeslagenVersie -lt \[version\]'1\.9'")
+Check 'zet AudioTailTolerance recht'   ($p6 -match '(?s)opgeslagenVersie -lt \[version\]''1\.9''.{0,900}AudioTailTolerance = 2\.0')
+Check 'zet het uur-interval recht'     ($p6 -match '(?s)opgeslagenVersie -lt \[version\]''1\.9''.{0,1200}WatchMinutes = 1440\.0')
+''
+
 '--- 7. kijken en afsluiten sluiten elkaar uit ---'
 Check 'de combinatie wordt bewaakt' ($p7 -match 'function Set-WatchExitCombinatie')
 Check 'afsluiten gaat uit'          ($p7 -match '(?s)Set-WatchExitCombinatie.{0,600}chkExitAfter\.IsChecked = \$false')

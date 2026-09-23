@@ -1502,12 +1502,16 @@ $ConvertWorker = {
         $pre       = $null
         $preHuidig = $null
 
-        # $lock      : het lock van het bestand dat nu onder handen is
-        # $bezet     : bestanden die een andere pc had vastgehouden
-        # $mopRonde  : de tweede en laatste ronde langs die bestanden
-        $lock     = $null
-        $bezet    = New-Object System.Collections.ArrayList
-        $mopRonde = $false
+        # $lock         : het lock van het bestand dat nu onder handen is
+        # $busySkips    : hoeveel bestanden onderweg bij een andere pc
+        #                 in gebruik waren (voor het eindrapport)
+        # $busyOpnieuw  : paden die al meteen achteraan de wachtrij zijn
+        #                 gezet; daarna niet nog een keer, anders kan een
+        #                 bestand dat de hele ronde bezet blijft de boel
+        #                 voor onbepaalde tijd ophouden
+        $lock        = $null
+        $busySkips   = 0
+        $busyOpnieuw = New-Object System.Collections.Generic.HashSet[string]
         $script:HuidigLock = $null
 
         $lockAan   = $true
@@ -1539,24 +1543,6 @@ $ConvertWorker = {
             $job = Get-NextJob
 
             if ($job -eq $null) {
-                # Wachtrij leeg. Stonden er bestanden die de andere pc
-                # vasthield, dan nog EEN ronde: die pc kan inmiddels klaar
-                # zijn of gestopt. Precies een ronde - een bestand dat de
-                # ander wel afmaakt komt nooit meer vrij (het origineel is
-                # dan weg), dus blijven wachten heeft geen zin.
-                if ($bezet.Count -gt 0 -and -not $mopRonde) {
-                    $mopRonde = $true
-                    W ''
-                    W ("{0} bestand(en) waren bij een andere pc in gebruik; nog een keer kijken." -f $bezet.Count)
-                    Start-Sleep -Seconds 5
-                    $terug = @($bezet.ToArray())
-                    $bezet.Clear()
-                    $q = $sync.Queue
-                    [System.Threading.Monitor]::Enter($q.SyncRoot)
-                    try { foreach ($b in $terug) { $b.Queued = $true; [void]$q.Add($b) } }
-                    finally { [System.Threading.Monitor]::Exit($q.SyncRoot) }
-                    continue
-                }
                 break                            # wachtrij leeg: klaar
             }
 
@@ -1611,10 +1597,31 @@ $ConvertWorker = {
                     }
                     $job.Status     = 'Andere pc bezig'
                     $job.ResultText = $(if ($poging.Owner) { "In gebruik door $($poging.Owner)" } else { 'In gebruik door een andere pc' })
-                    $job.Queued     = $false
-                    $job.QueueText  = ''
-                    if (-not $mopRonde) { [void]$bezet.Add($job) }
-                    W ("Overgeslagen, {0}: {1}" -f $job.ResultText.ToLower(), $job.Name)
+                    $busySkips++
+
+                    # Meteen achteraan de wachtrij, niet pas als de hele rij
+                    # klaar is: als de andere pc net stopt of het net een
+                    # hapering was, krijgt dit bestand zo een nieuwe kans
+                    # zonder op de rest te hoeven wachten (voor eventueel
+                    # foutherstel), en ondertussen kan de rest van de rij
+                    # gewoon doorlopen. Per bestand hoogstens een keer
+                    # opnieuw in deze ronde - anders houdt een bestand dat de
+                    # hele ronde bezet blijft de boel voor onbepaalde tijd op.
+                    $pad = [string]$job.FullPath
+                    if ($busyOpnieuw.Contains($pad)) {
+                        $job.Queued    = $false
+                        $job.QueueText = ''
+                        W ("Overgeslagen, {0}: {1}" -f $job.ResultText.ToLower(), $job.Name)
+                        continue
+                    }
+                    [void]$busyOpnieuw.Add($pad)
+                    W ("Overgeslagen, {0}: {1} - meteen achteraan de wachtrij gezet." -f $job.ResultText.ToLower(), $job.Name)
+                    $job.Queued    = $true
+                    $job.QueueText = ''
+                    $q = $sync.Queue
+                    [System.Threading.Monitor]::Enter($q.SyncRoot)
+                    try { [void]$q.Add($job) }
+                    finally { [System.Threading.Monitor]::Exit($q.SyncRoot) }
                     continue
                 }
                 else {
@@ -2222,8 +2229,8 @@ $ConvertWorker = {
         $lock = $null
         $script:HuidigLock = $null
 
-        if ($bezet.Count -gt 0) {
-            W ("{0} bestand(en) overgeslagen omdat een andere pc ermee bezig was." -f $bezet.Count)
+        if ($busySkips -gt 0) {
+            W ("{0} keer overgeslagen omdat een andere pc er al mee bezig was." -f $busySkips)
         }
 
         # ---- eindrapport --------------------------------------------

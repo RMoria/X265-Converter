@@ -216,9 +216,26 @@ $script:SharedLocks = $true
 $script:LockStaleMinutes = 15.0
 
 # Hoe lang de wachtrij leeg moet zijn voordat er uit zichzelf opnieuw naar
-# de bronmappen wordt gekeken. Alleen van belang als het vinkje 'elk uur
-# opnieuw kijken' aanstaat.
-$script:WatchMinutes = 60.0
+# de bronmappen wordt gekeken. Alleen van belang als het vinkje 'opnieuw
+# kijken' aanstaat; het aantal uur staat ernaast in de GUI (1-168, standaard
+# 24) en wordt hier intern in minuten bewaard.
+$script:WatchMinutes = 1440.0
+
+function Set-WatchHoursText {
+    # Zet de tekst uit het uur-invoerveld om naar minuten (intern gebruikt)
+    # en klemt die binnen 1-168 uur. Geeft het geklemde aantal uur terug
+    # zodat de aanroeper het veld zelf weer netjes kan tonen.
+    param([string]$Tekst)
+    $u  = 0.0
+    $ok = [double]::TryParse($Tekst, [Globalization.NumberStyles]::Float,
+                              [Globalization.CultureInfo]::InvariantCulture, [ref]$u)
+    if (-not $ok -or $u -le 0) { $u = 24.0 }
+    $u = [Math]::Round($u)
+    if ($u -lt 1)   { $u = 1 }
+    if ($u -gt 168) { $u = 168 }
+    $script:WatchMinutes = $u * 60.0
+    return [int]$u
+}
 
 # Wachtrij bewaren over een herstart heen. Staat UIT: bij het opstarten
 # begint de lijst leeg, zodat een nieuwe scan niet bij de resten van de

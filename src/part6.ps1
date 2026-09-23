@@ -458,6 +458,7 @@ if ($saved -ne $null) {
             $m = [double]$saved.WatchMinutes
             if ($m -ge 1.0 -and $m -le 10080.0) { $script:WatchMinutes = $m }
         }
+        $ui.txtWatchHours.Text = [string]([Math]::Max(1, [Math]::Min(168, [Math]::Round($script:WatchMinutes / 60.0))))
 
         # SkipHevc uit oudere versies wordt bewust genegeerd: HEVC
         # overslaan is nu vast gedrag.
@@ -533,6 +534,39 @@ if ($saved -ne $null) {
                 if ($saved.Totals.LastUsed)  { $t.LastUsed  = [string]$saved.Totals.LastUsed }
             }
             finally { [System.Threading.Monitor]::Exit($t.SyncRoot) }
+        }
+
+        # ---- instellingen bijwerken naar een nieuwere versie ---------
+        #  Sommige instellingen staan niet in de GUI en konden dus alleen
+        #  de vaste standaard van een oudere versie hebben meegekregen.
+        #  Bij het inlezen van een ouder instellingenbestand corrigeren we
+        #  die hier naar de huidige standaard, zodat dat meteen goed staat
+        #  en niet per pc met de hand rechtgezet hoeft te worden. Nieuwe
+        #  correcties komen hieronder bij zodra een volgende versie dat
+        #  nodig heeft - dit is de ene plek die bijhoudt wat er per versie
+        #  is veranderd.
+        $opgeslagenVersie = [version]'0.0'
+        if ($saved.Version) {
+            try { $opgeslagenVersie = [version]([string]$saved.Version) } catch { }
+        }
+
+        if ($opgeslagenVersie -lt [version]'1.9') {
+            # AudioTailTolerance stond op sommige installaties nog op een
+            # oudere waarde (5 s) van voor dit veld een vaste standaard
+            # van 2 s kreeg. Er is geen GUI-veld voor, dus een afwijkende
+            # waarde is nooit bewust ingesteld en mag terug naar de
+            # standaard.
+            if ($script:AudioTailTolerance -ne 2.0) {
+                Write-Log ('Instellingen bijgewerkt naar v1.9: AudioTailTolerance stond op {0} s, teruggezet naar de standaard van 2 s.' -f $script:AudioTailTolerance)
+                $script:AudioTailTolerance = 2.0
+            }
+            # Opnieuw kijken zat vast op 1 uur (60 min); er was geen
+            # invoerveld om dat te wijzigen. De nieuwe standaard is 24 uur.
+            if ($script:WatchMinutes -eq 60.0) {
+                $script:WatchMinutes = 1440.0
+                $ui.txtWatchHours.Text = '24'
+                Write-Log 'Instellingen bijgewerkt naar v1.9: interval voor opnieuw kijken stond op de oude vaste waarde van 1 uur, teruggezet naar de nieuwe standaard van 24 uur.'
+            }
         }
     } catch { }
 }

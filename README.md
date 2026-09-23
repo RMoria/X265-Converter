@@ -3,7 +3,7 @@
 Video naar H.265 / HEVC omzetten op Windows, met een grafische interface.
 Eén PowerShell-script plus een starter; verder alleen ffmpeg.
 
-**Versie 1.8** — [wat er per versie is veranderd](LEESMIJ-X265-Converter.md#wat-er-per-versie-is-veranderd)
+**Versie 1.9** — [wat er per versie is veranderd](LEESMIJ-X265-Converter.md#wat-er-per-versie-is-veranderd)
 
 ![PowerShell 5.1](https://img.shields.io/badge/PowerShell-5.1-blue)
 ![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-blue)

@@ -74,8 +74,8 @@ param(
 #  LEESMIJ-X265-Converter.md.
 # ---------------------------------------------------------------------
 $AppName    = 'X265 Converter'
-$AppVersion = '1.8'
-$AppDate    = '2026-09-15'
+$AppVersion = '1.9'
+$AppDate    = '2026-09-23'
 $AppTitle   = 'Video naar H.265 / HEVC'
 $AppStamp   = ('{0} {1} ({2})' -f $AppName, $AppVersion, $AppDate)
 
@@ -1318,9 +1318,26 @@ $script:SharedLocks = $true
 $script:LockStaleMinutes = 15.0
 
 # Hoe lang de wachtrij leeg moet zijn voordat er uit zichzelf opnieuw naar
-# de bronmappen wordt gekeken. Alleen van belang als het vinkje 'elk uur
-# opnieuw kijken' aanstaat.
-$script:WatchMinutes = 60.0
+# de bronmappen wordt gekeken. Alleen van belang als het vinkje 'opnieuw
+# kijken' aanstaat; het aantal uur staat ernaast in de GUI (1-168, standaard
+# 24) en wordt hier intern in minuten bewaard.
+$script:WatchMinutes = 1440.0
+
+function Set-WatchHoursText {
+    # Zet de tekst uit het uur-invoerveld om naar minuten (intern gebruikt)
+    # en klemt die binnen 1-168 uur. Geeft het geklemde aantal uur terug
+    # zodat de aanroeper het veld zelf weer netjes kan tonen.
+    param([string]$Tekst)
+    $u  = 0.0
+    $ok = [double]::TryParse($Tekst, [Globalization.NumberStyles]::Float,
+                              [Globalization.CultureInfo]::InvariantCulture, [ref]$u)
+    if (-not $ok -or $u -le 0) { $u = 24.0 }
+    $u = [Math]::Round($u)
+    if ($u -lt 1)   { $u = 1 }
+    if ($u -gt 168) { $u = 168 }
+    $script:WatchMinutes = $u * 60.0
+    return [int]$u
+}
 
 # Wachtrij bewaren over een herstart heen. Staat UIT: bij het opstarten
 # begint de lijst leeg, zodat een nieuwe scan niet bij de resten van de
@@ -1905,8 +1922,13 @@ function Write-Log {
             <CheckBox x:Name="chkDeleteOrig" Content="Origineel verwijderen na geslaagde verplaatsing" IsChecked="True"/>
             <CheckBox x:Name="chkSubs"       Content="Ondertitels meenemen naar de nieuwe naam" IsChecked="True"/>
             <CheckBox x:Name="chkExitAfter"  Content="Programma afsluiten na conversie stop" IsChecked="False"/>
-            <CheckBox x:Name="chkWatch"      Content="Elk uur opnieuw kijken als de wachtrij leeg is" IsChecked="False"
-                      ToolTip="Kijkt na een uur zonder werk of er nieuwe bestanden in de bronmappen staan en zet die meteen om. Geen meldingen; laat het gewoon aanstaan."/>
+            <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+              <CheckBox x:Name="chkWatch" Content="Opnieuw kijken als de wachtrij leeg is, elke" IsChecked="False" VerticalAlignment="Center"
+                        ToolTip="Kijkt na het ingestelde aantal uur zonder werk of er nieuwe bestanden in de bronmappen staan en zet die meteen om. Geen meldingen; laat het gewoon aanstaan."/>
+              <TextBox x:Name="txtWatchHours" Width="40" Margin="6,0,4,0" Text="24" TextAlignment="Center" VerticalAlignment="Center"
+                       ToolTip="Aantal uur zonder werk voordat de bronmappen opnieuw worden doorzocht (1-168)."/>
+              <TextBlock Text="uur" VerticalAlignment="Center"/>
+            </StackPanel>
           </StackPanel>
         </Grid>
       </GroupBox>
@@ -4372,12 +4394,16 @@ $ConvertWorker = {
         $pre       = $null
         $preHuidig = $null
 
-        # $lock      : het lock van het bestand dat nu onder handen is
-        # $bezet     : bestanden die een andere pc had vastgehouden
-        # $mopRonde  : de tweede en laatste ronde langs die bestanden
-        $lock     = $null
-        $bezet    = New-Object System.Collections.ArrayList
-        $mopRonde = $false
+        # $lock         : het lock van het bestand dat nu onder handen is
+        # $busySkips    : hoeveel bestanden onderweg bij een andere pc
+        #                 in gebruik waren (voor het eindrapport)
+        # $busyOpnieuw  : paden die al meteen achteraan de wachtrij zijn
+        #                 gezet; daarna niet nog een keer, anders kan een
+        #                 bestand dat de hele ronde bezet blijft de boel
+        #                 voor onbepaalde tijd ophouden
+        $lock        = $null
+        $busySkips   = 0
+        $busyOpnieuw = New-Object System.Collections.Generic.HashSet[string]
         $script:HuidigLock = $null
 
         $lockAan   = $true
@@ -4409,24 +4435,6 @@ $ConvertWorker = {
             $job = Get-NextJob
 
             if ($job -eq $null) {
-                # Wachtrij leeg. Stonden er bestanden die de andere pc
-                # vasthield, dan nog EEN ronde: die pc kan inmiddels klaar
-                # zijn of gestopt. Precies een ronde - een bestand dat de
-                # ander wel afmaakt komt nooit meer vrij (het origineel is
-                # dan weg), dus blijven wachten heeft geen zin.
-                if ($bezet.Count -gt 0 -and -not $mopRonde) {
-                    $mopRonde = $true
-                    W ''
-                    W ("{0} bestand(en) waren bij een andere pc in gebruik; nog een keer kijken." -f $bezet.Count)
-                    Start-Sleep -Seconds 5
-                    $terug = @($bezet.ToArray())
-                    $bezet.Clear()
-                    $q = $sync.Queue
-                    [System.Threading.Monitor]::Enter($q.SyncRoot)
-                    try { foreach ($b in $terug) { $b.Queued = $true; [void]$q.Add($b) } }
-                    finally { [System.Threading.Monitor]::Exit($q.SyncRoot) }
-                    continue
-                }
                 break                            # wachtrij leeg: klaar
             }
 
@@ -4481,10 +4489,31 @@ $ConvertWorker = {
                     }
                     $job.Status     = 'Andere pc bezig'
                     $job.ResultText = $(if ($poging.Owner) { "In gebruik door $($poging.Owner)" } else { 'In gebruik door een andere pc' })
-                    $job.Queued     = $false
-                    $job.QueueText  = ''
-                    if (-not $mopRonde) { [void]$bezet.Add($job) }
-                    W ("Overgeslagen, {0}: {1}" -f $job.ResultText.ToLower(), $job.Name)
+                    $busySkips++
+
+                    # Meteen achteraan de wachtrij, niet pas als de hele rij
+                    # klaar is: als de andere pc net stopt of het net een
+                    # hapering was, krijgt dit bestand zo een nieuwe kans
+                    # zonder op de rest te hoeven wachten (voor eventueel
+                    # foutherstel), en ondertussen kan de rest van de rij
+                    # gewoon doorlopen. Per bestand hoogstens een keer
+                    # opnieuw in deze ronde - anders houdt een bestand dat de
+                    # hele ronde bezet blijft de boel voor onbepaalde tijd op.
+                    $pad = [string]$job.FullPath
+                    if ($busyOpnieuw.Contains($pad)) {
+                        $job.Queued    = $false
+                        $job.QueueText = ''
+                        W ("Overgeslagen, {0}: {1}" -f $job.ResultText.ToLower(), $job.Name)
+                        continue
+                    }
+                    [void]$busyOpnieuw.Add($pad)
+                    W ("Overgeslagen, {0}: {1} - meteen achteraan de wachtrij gezet." -f $job.ResultText.ToLower(), $job.Name)
+                    $job.Queued    = $true
+                    $job.QueueText = ''
+                    $q = $sync.Queue
+                    [System.Threading.Monitor]::Enter($q.SyncRoot)
+                    try { [void]$q.Add($job) }
+                    finally { [System.Threading.Monitor]::Exit($q.SyncRoot) }
                     continue
                 }
                 else {
@@ -5092,8 +5121,8 @@ $ConvertWorker = {
         $lock = $null
         $script:HuidigLock = $null
 
-        if ($bezet.Count -gt 0) {
-            W ("{0} bestand(en) overgeslagen omdat een andere pc ermee bezig was." -f $bezet.Count)
+        if ($busySkips -gt 0) {
+            W ("{0} keer overgeslagen omdat een andere pc er al mee bezig was." -f $busySkips)
         }
 
         # ---- eindrapport --------------------------------------------
@@ -5606,6 +5635,7 @@ if ($saved -ne $null) {
             $m = [double]$saved.WatchMinutes
             if ($m -ge 1.0 -and $m -le 10080.0) { $script:WatchMinutes = $m }
         }
+        $ui.txtWatchHours.Text = [string]([Math]::Max(1, [Math]::Min(168, [Math]::Round($script:WatchMinutes / 60.0))))
 
         # SkipHevc uit oudere versies wordt bewust genegeerd: HEVC
         # overslaan is nu vast gedrag.
@@ -5681,6 +5711,39 @@ if ($saved -ne $null) {
                 if ($saved.Totals.LastUsed)  { $t.LastUsed  = [string]$saved.Totals.LastUsed }
             }
             finally { [System.Threading.Monitor]::Exit($t.SyncRoot) }
+        }
+
+        # ---- instellingen bijwerken naar een nieuwere versie ---------
+        #  Sommige instellingen staan niet in de GUI en konden dus alleen
+        #  de vaste standaard van een oudere versie hebben meegekregen.
+        #  Bij het inlezen van een ouder instellingenbestand corrigeren we
+        #  die hier naar de huidige standaard, zodat dat meteen goed staat
+        #  en niet per pc met de hand rechtgezet hoeft te worden. Nieuwe
+        #  correcties komen hieronder bij zodra een volgende versie dat
+        #  nodig heeft - dit is de ene plek die bijhoudt wat er per versie
+        #  is veranderd.
+        $opgeslagenVersie = [version]'0.0'
+        if ($saved.Version) {
+            try { $opgeslagenVersie = [version]([string]$saved.Version) } catch { }
+        }
+
+        if ($opgeslagenVersie -lt [version]'1.9') {
+            # AudioTailTolerance stond op sommige installaties nog op een
+            # oudere waarde (5 s) van voor dit veld een vaste standaard
+            # van 2 s kreeg. Er is geen GUI-veld voor, dus een afwijkende
+            # waarde is nooit bewust ingesteld en mag terug naar de
+            # standaard.
+            if ($script:AudioTailTolerance -ne 2.0) {
+                Write-Log ('Instellingen bijgewerkt naar v1.9: AudioTailTolerance stond op {0} s, teruggezet naar de standaard van 2 s.' -f $script:AudioTailTolerance)
+                $script:AudioTailTolerance = 2.0
+            }
+            # Opnieuw kijken zat vast op 1 uur (60 min); er was geen
+            # invoerveld om dat te wijzigen. De nieuwe standaard is 24 uur.
+            if ($script:WatchMinutes -eq 60.0) {
+                $script:WatchMinutes = 1440.0
+                $ui.txtWatchHours.Text = '24'
+                Write-Log 'Instellingen bijgewerkt naar v1.9: interval voor opnieuw kijken stond op de oude vaste waarde van 1 uur, teruggezet naar de nieuwe standaard van 24 uur.'
+            }
         }
     } catch { }
 }
@@ -6569,7 +6632,7 @@ function Start-WatchScan {
     $script:NascanGedaan = $false
 
     Write-Log ''
-    Write-Log ('--- Automatisch kijken ({0:N0} min zonder werk) -------------' -f $script:WatchMinutes)
+    Write-Log ('--- Automatisch kijken ({0:N0} uur zonder werk) -------------' -f ($script:WatchMinutes / 60.0))
     Start-Worker $ScanWorker 'scan'
     Update-Buttons
     return $true
@@ -6730,6 +6793,12 @@ function Start-VerifyRound {
 
 $ui.chkWatch.Add_Checked({   Set-WatchExitCombinatie; $script:WatchVanaf = Get-Date; Request-Save })
 $ui.chkWatch.Add_Unchecked({ Set-WatchExitCombinatie; $script:WatchVanaf = $null;     Request-Save })
+
+$ui.txtWatchHours.Add_LostFocus({
+    $u = Set-WatchHoursText $ui.txtWatchHours.Text
+    $ui.txtWatchHours.Text = [string]$u
+    Request-Save
+})
 
 $ui.btnStart.Add_Click({
 
@@ -7769,7 +7838,7 @@ $win.Add_Loaded({
     Set-WatchExitCombinatie
     if ([bool]$ui.chkWatch.IsChecked) {
         $script:WatchVanaf = Get-Date
-        Write-Log ('Elk uur opnieuw kijken staat aan: na {0:N0} minuten zonder werk worden de bronmappen opnieuw doorlopen.' -f $script:WatchMinutes)
+        Write-Log ('Opnieuw kijken staat aan: na {0:N0} uur zonder werk worden de bronmappen opnieuw doorlopen.' -f ($script:WatchMinutes / 60.0))
     }
 
     $ui.stTotals.Text = Format-Totals

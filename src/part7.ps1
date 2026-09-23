@@ -802,7 +802,7 @@ function Start-WatchScan {
     $script:NascanGedaan = $false
 
     Write-Log ''
-    Write-Log ('--- Automatisch kijken ({0:N0} min zonder werk) -------------' -f $script:WatchMinutes)
+    Write-Log ('--- Automatisch kijken ({0:N0} uur zonder werk) -------------' -f ($script:WatchMinutes / 60.0))
     Start-Worker $ScanWorker 'scan'
     Update-Buttons
     return $true
@@ -963,6 +963,12 @@ function Start-VerifyRound {
 
 $ui.chkWatch.Add_Checked({   Set-WatchExitCombinatie; $script:WatchVanaf = Get-Date; Request-Save })
 $ui.chkWatch.Add_Unchecked({ Set-WatchExitCombinatie; $script:WatchVanaf = $null;     Request-Save })
+
+$ui.txtWatchHours.Add_LostFocus({
+    $u = Set-WatchHoursText $ui.txtWatchHours.Text
+    $ui.txtWatchHours.Text = [string]$u
+    Request-Save
+})
 
 $ui.btnStart.Add_Click({
 

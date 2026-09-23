@@ -345,8 +345,13 @@
             <CheckBox x:Name="chkDeleteOrig" Content="Origineel verwijderen na geslaagde verplaatsing" IsChecked="True"/>
             <CheckBox x:Name="chkSubs"       Content="Ondertitels meenemen naar de nieuwe naam" IsChecked="True"/>
             <CheckBox x:Name="chkExitAfter"  Content="Programma afsluiten na conversie stop" IsChecked="False"/>
-            <CheckBox x:Name="chkWatch"      Content="Elk uur opnieuw kijken als de wachtrij leeg is" IsChecked="False"
-                      ToolTip="Kijkt na een uur zonder werk of er nieuwe bestanden in de bronmappen staan en zet die meteen om. Geen meldingen; laat het gewoon aanstaan."/>
+            <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+              <CheckBox x:Name="chkWatch" Content="Opnieuw kijken als de wachtrij leeg is, elke" IsChecked="False" VerticalAlignment="Center"
+                        ToolTip="Kijkt na het ingestelde aantal uur zonder werk of er nieuwe bestanden in de bronmappen staan en zet die meteen om. Geen meldingen; laat het gewoon aanstaan."/>
+              <TextBox x:Name="txtWatchHours" Width="40" Margin="6,0,4,0" Text="24" TextAlignment="Center" VerticalAlignment="Center"
+                       ToolTip="Aantal uur zonder werk voordat de bronmappen opnieuw worden doorzocht (1-168)."/>
+              <TextBlock Text="uur" VerticalAlignment="Center"/>
+            </StackPanel>
           </StackPanel>
         </Grid>
       </GroupBox>

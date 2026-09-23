@@ -220,7 +220,7 @@ Check 'de rest gewoon gedaan'       ($sync.Success -eq 1 -and (Test-Path '/tmp/l
 Check 'telt niet als fout'          ($sync.Failed -eq 0 -and -not $sync.EmergencyStop)
 ''
 
-'--- 8. de tweede ronde langs wat bezet was ---'
+'--- 8. bezet bestand komt meteen achteraan de wachtrij ---'
 Fresh '/tmp/lk4'
 MkVid '/tmp/lk4/eerst.mkv' 4
 MkVid '/tmp/lk4/bezet.mkv' 4
@@ -235,7 +235,7 @@ Enqueue-Jobs @($j1, $j2)
 $w = Start-W $ConvertWorker 'conv'
 
 # zodra hij bezet.mkv heeft overgeslagen laten we het lock los; de
-# tweede ronde hoort het dan alsnog op te pakken
+# herkansing verderop in de wachtrij hoort het dan alsnog op te pakken
 $losgelaten = $false
 $stop = (Get-Date).AddSeconds(90)
 while (-not $w.Handle.IsCompleted -and (Get-Date) -lt $stop) {
@@ -248,7 +248,7 @@ while (-not $w.Handle.IsCompleted -and (Get-Date) -lt $stop) {
 Stop-W $w | Out-Null
 $lg = @(Drain-Log)
 Check 'eerst overgeslagen'          ($losgelaten)
-Check 'tweede ronde aangekondigd'   (($lg -join ' ') -match 'nog een keer kijken')
+Check 'meteen achteraan gezet'      (($lg -join ' ') -match 'meteen achteraan de wachtrij gezet')
 Check 'alsnog omgezet'              (Test-Path '/tmp/lk4/bezet.x265.mkv')
 Check 'allebei klaar'               ($sync.Success -eq 2)                             "($($sync.Success))"
 Check 'geen lock achtergebleven'    ((@(Get-ChildItem '/tmp/lk4' -Filter '*.x265lock')).Count -eq 0)

@@ -850,7 +850,7 @@ $win.Add_Loaded({
     Set-WatchExitCombinatie
     if ([bool]$ui.chkWatch.IsChecked) {
         $script:WatchVanaf = Get-Date
-        Write-Log ('Elk uur opnieuw kijken staat aan: na {0:N0} minuten zonder werk worden de bronmappen opnieuw doorlopen.' -f $script:WatchMinutes)
+        Write-Log ('Opnieuw kijken staat aan: na {0:N0} uur zonder werk worden de bronmappen opnieuw doorlopen.' -f ($script:WatchMinutes / 60.0))
     }
 
     $ui.stTotals.Text = Format-Totals
