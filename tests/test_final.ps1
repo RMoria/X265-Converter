@@ -27,10 +27,10 @@ Enqueue-Jobs @($j)
 $w = Start-W $ConvertWorker 'conv'; while (-not $w.Handle.IsCompleted) { Start-Sleep -Milliseconds 200 }; Stop-W $w | Out-Null
 Drain-Log | Out-Null
 $f1 = @(Get-ChildItem /tmp/e2e/f1 -File | ForEach-Object Name | Sort-Object)
-Check 'video omgenoemd'            ($f1 -contains 'een.x265.mkv')
-Check 'srt mee'                    ($f1 -contains 'een.x265.srt')
-Check 'taalcode+vlag behouden'     ($f1 -contains 'een.x265.en.forced.srt')
-Check 'idx/sub paar mee'           (($f1 -contains 'een.x265.idx') -and ($f1 -contains 'een.x265.sub'))
+Check 'video omgenoemd'            ($f1 -contains 'een.mkv')
+Check 'srt mee'                    ($f1 -contains 'een.srt')
+Check 'taalcode+vlag behouden'     ($f1 -contains 'een.en.forced.srt')
+Check 'idx/sub paar mee'           (($f1 -contains 'een.idx') -and ($f1 -contains 'een.sub'))
 Check 'origineel weg'              (-not ($f1 -contains 'een x264.mkv'))
 Check 'oude ondertitels weg'       (-not ($f1 -contains 'een x264.srt'))
 Check 'vreemde b.srt onaangeroerd' ($f1 -contains 'een x264b.srt')
@@ -47,8 +47,8 @@ Drain-Log | Out-Null
 $f2 = @(Get-ChildItem /tmp/e2e/f2 -File | ForEach-Object Name)
 Check 'origineel blijft staan'     ($f2 -contains 'twee x264.mkv')
 Check 'originele ondertitel blijft'($f2 -contains 'twee x264.nl.srt')
-Check 'nieuwe video'               ($f2 -contains 'twee.x265.mkv')
-Check 'ondertitel gekopieerd'      ($f2 -contains 'twee.x265.nl.srt')
+Check 'nieuwe video'               ($f2 -contains 'twee.mkv')
+Check 'ondertitel gekopieerd'      ($f2 -contains 'twee.nl.srt')
 ''
 '--- 3. noodstop na 3 fouten op rij, geslaagde zet teller terug ---'
 Fresh /tmp/e2e/f3
@@ -91,7 +91,7 @@ while (-not $w.Handle.IsCompleted) {
 Stop-W $w | Out-Null
 Drain-Log | Out-Null
 $done4 = @($lst4 | Where-Object { $_.Status -eq 'Geslaagd' })
-$out4  = @(Get-ChildItem /tmp/e2e/f4 -File -Filter '*.x265.mkv')
+$out4  = @(Get-ChildItem /tmp/e2e/f4 -File -Filter '*.mkv')
 Check 'alle 5 geslaagd'             ($done4.Count -eq 5) "($($done4.Count))"
 Check '5 uitvoerbestanden'          ($out4.Count -eq 5)  "($($out4.Count))"
 Check 'geen dubbele verwerking'     ($sync.JobsDone -eq 5) "(JobsDone $($sync.JobsDone))"

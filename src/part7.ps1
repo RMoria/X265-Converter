@@ -440,6 +440,12 @@ function Update-Buttons {
     $ui.btnPause.IsEnabled     = $convBusy
     $ui.btnStopAfter.IsEnabled = $convBusy
 
+    # Hernoemen alleen als er niets loopt: een conversie leunt op de namen
+    # (en op de locks naast de bron), een scan zou half oude namen zien.
+    $hernoemBezig = $scanBusy -and (([string]$sync.ScanMode) -like 'hernoem*')
+    $ui.btnRename.IsEnabled = (-not $scanBusy) -and (-not $convBusy)
+    $ui.btnStart.IsEnabled  = -not $hernoemBezig
+
     if ($script:ExitAt -ne $null) {
         # tijdens de aftelling is dit de annuleerknop; het opschrift komt
         # uit de klok, dus hier alleen inschakelen
@@ -680,6 +686,8 @@ $ui.btnSaveLog.Add_Click({
 function Start-ConversionIfIdle {
 
     if ($sync.ConvBusy) { return }
+    # Niet midden in het hernoemen van de bronmappen beginnen.
+    if ([bool]$sync.ScanBusy -and ([string]$sync.ScanMode) -like 'hernoem*') { return }
     if ($sync.Queue.Count -lt 1) { return }
 
     $st = Get-ConvertSettings
@@ -878,6 +886,8 @@ function Get-ConvertSettings {
         AudioLossLimit     = [double]$script:AudioLossLimit
         PadShortAudio      = [bool]$script:PadShortAudio
         VcpMarker          = [string]$script:VcpMarker
+        RenameAfterConvert = [bool]$ui.chkRenameAfter.IsChecked
+        RenameUndoFile     = (Join-Path $DataDir ('hernoem_undo_{0}.csv' -f (Get-Date -Format 'yyyyMMdd')))
         Codec          = $codec
         Preset         = [string]$ui.cmbPreset.SelectedItem
         Crf            = [int]$ui.sldCrf.Value
@@ -959,6 +969,188 @@ function Start-VerifyRound {
     Set-Status 'Bewaarde lijst wordt nagelopen…'
 }
 
+# ---- bronmappen hernoemen --------------------------------------------
+#
+#  Twee rondes in de scan-slot: eerst een plan (niets wordt aangeraakt,
+#  er komt een voorbeeld-CSV), dan na bevestiging het uitvoeren. Bestanden
+#  waar een andere pc een lock op heeft blijven van tafel, ook als dat
+#  lock er pas tussen plan en uitvoeren is bijgekomen.
+# ---------------------------------------------------------------------
+
+$RenameWorker = {
+    $ErrorActionPreference = 'Continue'
+    $cfg   = $sync.ScanSettings
+    $stale = 15.0
+    if ($cfg.LockStaleMinutes) { $stale = [double]$cfg.LockStaleMinutes }
+    $sync.RenameError = ''
+
+    try {
+        if ($sync.ScanMode -eq 'hernoem-plan') {
+            $R     = Get-RnRules
+            $exts  = @($R.VideoExtensions) + @($R.SubExtensions)
+            $alle  = New-Object System.Collections.Generic.List[string]
+            $locks = New-Object System.Collections.Generic.List[string]
+            foreach ($map in @($cfg.Folders)) {
+                if ($sync.ScanCancel) { break }
+                $sync.ScanStatus = "Hernoemen: $map doorlopen…"
+                $items = @()
+                try { $items = @(Get-ChildItem -LiteralPath $map -File -Recurse:([bool]$cfg.Recursive) -Force -ErrorAction SilentlyContinue) } catch { }
+                foreach ($fi in $items) {
+                    $n = $fi.Name
+                    if ($n -like '*.x265lock') { $locks.Add($fi.FullName.Substring(0, $fi.FullName.Length - 9)); continue }
+                    if ($n -like 'x265_*') { continue }            # werkbestanden
+                    if ($exts -contains $fi.Extension.ToLower()) { $alle.Add($fi.FullName) }
+                }
+                $sync.ScanStatus = "Hernoemen: {0} bestanden gevonden…" -f $alle.Count
+            }
+            if ($sync.ScanCancel) { $sync.RenamePlan = $null; return }
+
+            # Alleen levende locks houden een bestand vast; een verweesd lock
+            # (pc uitgevallen) niet.
+            $vast = @($locks | Where-Object { -not (Test-LockFree $_ $stale) })
+            $sync.ScanStatus = 'Hernoemen: nieuwe namen bepalen…'
+            $plan = Get-RnPlan -Files ([string[]]$alle.ToArray()) -Frozen ([string[]]$vast)
+
+            try {
+                @($plan) | Select-Object Type, Status, Map, Oud, Nieuw, @{ n = 'Opmerking'; e = { $_.KeptAs } } |
+                    Export-Csv -LiteralPath $cfg.PreviewFile -NoTypeInformation -Delimiter ';' -Encoding UTF8
+            }
+            catch { W ("Voorbeeld-CSV kon niet worden geschreven: {0}" -f $_.Exception.Message) 'WAARS' }
+            $sync.RenamePlan = $plan
+        }
+        elseif ($sync.ScanMode -eq 'hernoem-uit') {
+            $sync.ScanStatus = 'Hernoemen: bezig…'
+            $vrij = { param($p) Test-LockFree $p $stale }
+            $sync.RenameResult = Invoke-RnPlan -Plan @($sync.RenamePlan) -UndoFile ([string]$cfg.UndoFile) -StillFree $vrij
+        }
+    }
+    catch {
+        $sync.RenameError = $_.Exception.Message
+        W ("Hernoemen afgebroken: {0}" -f $_.Exception.Message) 'FOUT'
+    }
+}
+
+$ui.btnRename.Add_Click({
+    if ([bool]$sync.ScanBusy -or [bool]$sync.ConvBusy) { return }
+    if ($ui.lstFolders.Items.Count -eq 0) {
+        [System.Windows.MessageBox]::Show('Kies eerst een of meer bronmappen.', 'Hernoemen', 'OK', 'Information') | Out-Null
+        return
+    }
+    $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+    $sync.ScanSettings = @{
+        Folders          = @($ui.lstFolders.Items | ForEach-Object { [string]$_ })
+        Recursive        = [bool]$script:Recursive
+        LockStaleMinutes = [double]$script:LockStaleMinutes
+        PreviewFile      = (Join-Path $DataDir ("hernoem_voorbeeld_$stamp.csv"))
+        UndoFile         = (Join-Path $DataDir ("hernoem_undo_$stamp.csv"))
+    }
+    $sync.ScanMode     = 'hernoem-plan'
+    $sync.ScanCancel   = $false
+    $sync.ScanStatus   = 'Hernoemen: bronmappen doorlopen…'
+    $sync.RenamePlan   = $null
+    $sync.RenameResult = $null
+    Write-Log ''
+    Write-Log '--- Bronmappen hernoemen: overzicht maken (er verandert nog niets) ---'
+    Start-Worker $RenameWorker 'scan'
+    Update-Buttons
+})
+
+function Complete-Hernoemen {
+    param([string]$Fase)
+
+    if ($sync.RenameError) {
+        [System.Windows.MessageBox]::Show("Hernoemen is afgebroken:`n`n$($sync.RenameError)", 'Hernoemen', 'OK', 'Error') | Out-Null
+        return
+    }
+
+    if ($Fase -eq 'hernoem-plan') {
+        $plan = @($sync.RenamePlan)
+        if ($sync.RenamePlan -eq $null) { Write-Log 'Hernoemen gestopt; er is niets veranderd.'; Set-Status 'Hernoemen gestopt.'; return }
+
+        $tel = @{}
+        foreach ($r in $plan) { $k = ([string]$r.Status -split ' ')[0]; $tel[$k] = 1 + [int]$tel[$k] }
+        $nRen  = [int]$tel['OK']
+        $nDel  = [int]$tel['VERWIJDEREN']
+        $nConf = [int]$tel['CONFLICT']
+        $nGoed = [int]$tel['AL']
+        $nOver = [int]$tel['OVERGESLAGEN']
+
+        Write-Log ("Overzicht: {0} te hernoemen, {1} dubbel (naar de Prullenbak), {2} conflict, {3} al goed, {4} overgeslagen." -f `
+            $nRen, $nDel, $nConf, $nGoed, $nOver)
+        foreach ($r in @($plan | Where-Object { $_.Status -like 'VERWIJDEREN*' })) {
+            Write-Log ("  dubbel: {0}  (blijft: {1})" -f $r.OldPath, $r.KeptAs)
+        }
+        foreach ($r in @($plan | Where-Object { $_.Status -like 'CONFLICT*' })) {
+            Write-Log ("  conflict: {0} -> {1}  ({2})" -f $r.OldPath, $r.Nieuw, $r.KeptAs) 'WAARS'
+        }
+        Write-Log ("Volledig overzicht: {0}" -f $sync.ScanSettings.PreviewFile)
+
+        if ($nRen + $nDel -eq 0) {
+            Set-Status 'Hernoemen: alles staat al goed.'
+            [System.Windows.MessageBox]::Show(("Er valt niets te hernoemen.`n`n{0} al goed, {1} conflict, {2} overgeslagen." -f $nGoed, $nConf, $nOver),
+                'Hernoemen', 'OK', 'Information') | Out-Null
+            return
+        }
+
+        $m = "In de bronmappen:`n`n" +
+             ("  {0} bestand(en) hernoemen`n" -f $nRen) +
+             ("  {0} dubbel(en) naar de Prullenbak (op een netwerkschijf zijn ze dan echt weg)`n" -f $nDel) +
+             ("  {0} conflict(en) en {1} overgeslagen - die blijven zoals ze zijn`n`n" -f $nConf, $nOver) +
+             "Het volledige overzicht staat in:`n$($sync.ScanSettings.PreviewFile)`n`nNu uitvoeren?"
+        $a = [System.Windows.MessageBox]::Show($m, 'Bronmappen hernoemen', 'YesNo', 'Question')
+        if ($a -ne 'Yes') {
+            Write-Log 'Hernoemen niet uitgevoerd; er is niets veranderd.'
+            Set-Status 'Hernoemen niet uitgevoerd.'
+            return
+        }
+        # Terwijl de vraag openstond kan er iets zijn begonnen (een opdracht
+        # van de opdrachtregel, automatisch kijken). Dan niet.
+        if ([bool]$sync.ConvBusy -or [bool]$sync.ScanBusy) {
+            Write-Log 'Er is intussen een scan of conversie gestart; hernoemen niet uitgevoerd. Probeer het straks opnieuw.' 'WAARS'
+            return
+        }
+        Write-Log '--- Bronmappen hernoemen: uitvoeren ---'
+        $sync.ScanMode   = 'hernoem-uit'
+        $sync.ScanCancel = $false
+        $sync.ScanStatus = 'Hernoemen: bezig…'
+        Start-Worker $RenameWorker 'scan'
+        Update-Buttons
+        return
+    }
+
+    # ---- uitgevoerd: de lijst in het venster bijwerken ----------------
+    $res = $sync.RenameResult
+    if ($res -eq $null) { return }
+    $bijgewerkt = 0
+    foreach ($r in @($res.Renamed)) {
+        if ($r.Type -ne 'video') { continue }
+        foreach ($j in @($jobs)) {
+            if ([string]::Equals([string]$j.FullPath, [string]$r.OldPath, [StringComparison]::OrdinalIgnoreCase)) {
+                [void]$script:JobPaths.Remove([string]$j.FullPath)
+                $j.FullPath = [string]$r.NewPath
+                $j.Name     = [IO.Path]::GetFileName([string]$r.NewPath)
+                [void]$script:JobPaths.Add([string]$r.NewPath)
+                $bijgewerkt++
+            }
+        }
+    }
+    foreach ($p in @($res.Deleted)) {
+        foreach ($j in @($jobs)) {
+            if ([string]::Equals([string]$j.FullPath, $p, [StringComparison]::OrdinalIgnoreCase)) { [void](Remove-JobRow $j) }
+        }
+    }
+    Sync-QueueOrder
+    $txt = ("Hernoemen klaar: {0} hernoemd, {1} naar de Prullenbak, {2} mislukt." -f `
+        @($res.Renamed).Count, @($res.Deleted).Count, [int]$res.Failed)
+    Write-Log $txt
+    if ($bijgewerkt -gt 0) { Write-Log ("{0} regel(s) in de lijst bijgewerkt naar de nieuwe naam." -f $bijgewerkt) }
+    if (@($res.Renamed).Count -gt 0) {
+        Write-Log ('Terugdraaien: powershell -ExecutionPolicy Bypass -File "{0}" -HernoemTerug "{1}" -Uitvoeren' -f $PSCommandPath, $sync.ScanSettings.UndoFile)
+    }
+    Set-Status $txt
+    Request-Save
+}
+
 # ---- starten / toevoegen --------------------------------------------
 
 $ui.chkWatch.Add_Checked({   Set-WatchExitCombinatie; $script:WatchVanaf = Get-Date; Request-Save })
@@ -971,6 +1163,10 @@ $ui.txtWatchHours.Add_LostFocus({
 })
 
 $ui.btnStart.Add_Click({
+
+    # Tijdens het hernoemen van de bronmappen niet beginnen: dan zou de
+    # conversie namen oppakken die net veranderen.
+    if ([bool]$sync.ScanBusy -and ([string]$sync.ScanMode) -like 'hernoem*') { return }
 
     # Handmatig starten is een nieuwe ronde: de nascan mag daarna weer.
     $script:NascanGedaan = $false

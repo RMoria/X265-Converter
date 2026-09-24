@@ -6,6 +6,9 @@ function MkVid { param($P,[int]$Sec=5,[string]$V='libx264')
   & $FFMPEG -hide_banner -loglevel error -y -f lavfi -i "testsrc=size=320x240:rate=25:duration=$Sec" `
     -f lavfi -i "sine=duration=$Sec" -map 0:v -map 1:a -c:v $V -preset ultrafast -crf 36 -c:a aac $P 2>$null | Out-Null }
 
+function IsHevc { param($P) if (-not (Test-Path -LiteralPath $P)) { return $false }
+  return (((& $FFPROBE -v error -select_streams v:0 -show_entries stream=codec_name -of default=nw=1:nk=1 $P) -join '').Trim() -eq 'hevc') }
+
 # De lock-functies staan in $HelperText en zijn hier via testlib al geladen.
 '############ TWEE COMPUTERS OP DEZELFDE MAP ############'
 ''
@@ -162,8 +165,10 @@ Stop-W $w2 | Out-Null
 $log1 = @(); $l=''; while ($sync.LogQueue.TryDequeue([ref]$l)) { $log1 += $l }
 $log2 = @(); $l=''; while ($sync2.LogQueue.TryDequeue([ref]$l)) { $log2 += $l }
 
-$uit = @(Get-ChildItem '/tmp/lk2' -Filter '*.x265.mkv' | Select-Object -ExpandProperty Name | Sort-Object)
-$dubbel = @(Get-ChildItem '/tmp/lk2' -Filter '*.x265 (2).mkv')
+# Sinds v1.10 neemt het resultaat de plaats van de bron in (zelfde naam):
+# omgezet = de .mkv is nu HEVC.
+$uit = @(Get-ChildItem '/tmp/lk2' -Filter '*.mkv' | Where-Object { IsHevc $_.FullName } | Select-Object -ExpandProperty Name | Sort-Object)
+$dubbel = @(Get-ChildItem '/tmp/lk2' -File | Where-Object { $_.Name -like '* (2).mkv' -or $_.Name -like '*.x265*.mkv' })
 $restLock = @(Get-ChildItem '/tmp/lk2' -Filter '*.x265lock')
 
 "  pc1: $($sync.Success) geslaagd, pc2: $($sync2.Success) geslaagd"
@@ -173,7 +178,7 @@ Check 'geen enkele dubbel gedaan' ($dubbel.Count -eq 0)                     "($(
 Check 'samen precies vier'        (($sync.Success + $sync2.Success) -eq 4)  "($($sync.Success)+$($sync2.Success))"
 Check 'allebei hebben gewerkt'    ($sync.Success -ge 1 -and $sync2.Success -ge 1)
 Check 'geen lock achtergebleven'  ($restLock.Count -eq 0)                   "($($restLock.Count))"
-Check 'geen originelen meer'      ((@(Get-ChildItem '/tmp/lk2' -Filter '*.mkv' | Where-Object { $_.Name -notlike '*.x265.mkv' })).Count -eq 0)
+Check 'geen originelen meer'      ((@(Get-ChildItem '/tmp/lk2' -File | Where-Object { $_.Name -like '*.x265oud' -or ($_.Extension -eq '.mkv' -and -not (IsHevc $_.FullName)) })).Count -eq 0)
 $samen = ($log1 + $log2) -join ' '
 Check 'overslaan is gemeld'       ($samen -match 'Overgeslagen')
 Check 'geen noodstop'             (-not $sync.EmergencyStop -and -not $sync2.EmergencyStop)
@@ -216,7 +221,7 @@ $lg = @(Drain-Log)
 Check 'verdwenen bron overgeslagen' ($jv.Status -eq 'Niet gevonden')                  "($($jv.Status))"
 Check 'met uitleg in de regel'      ($jv.ResultText -match 'andere pc')
 Check 'gemeld in de log'            (($lg -join ' ') -match 'bron bestaat niet meer')
-Check 'de rest gewoon gedaan'       ($sync.Success -eq 1 -and (Test-Path '/tmp/lk3/blijft.x265.mkv'))
+Check 'de rest gewoon gedaan'       ($sync.Success -eq 1 -and (IsHevc '/tmp/lk3/blijft.mkv'))
 Check 'telt niet als fout'          ($sync.Failed -eq 0 -and -not $sync.EmergencyStop)
 ''
 
@@ -249,7 +254,7 @@ Stop-W $w | Out-Null
 $lg = @(Drain-Log)
 Check 'eerst overgeslagen'          ($losgelaten)
 Check 'meteen achteraan gezet'      (($lg -join ' ') -match 'meteen achteraan de wachtrij gezet')
-Check 'alsnog omgezet'              (Test-Path '/tmp/lk4/bezet.x265.mkv')
+Check 'alsnog omgezet'              (IsHevc '/tmp/lk4/bezet.mkv')
 Check 'allebei klaar'               ($sync.Success -eq 2)                             "($($sync.Success))"
 Check 'geen lock achtergebleven'    ((@(Get-ChildItem '/tmp/lk4' -Filter '*.x265lock')).Count -eq 0)
 ''
@@ -313,7 +318,8 @@ $lg = @(Drain-Log)
 Check 'lock is afgepakt'            ($gepakt)
 Check 'regel meldt het'             ($js.Status -eq 'Lock kwijt')                    "($($js.Status))"
 Check 'met de naam van de ander'    ($js.ResultText -match 'ANDEREPC')               "($($js.ResultText))"
-Check 'resultaat weggegooid'        (-not (Test-Path '/tmp/lk6/gestolen.x265.mkv'))
+Check 'resultaat weggegooid'        (-not (IsHevc '/tmp/lk6/gestolen.mkv'))
+Check 'niets opzij blijven staan'   (-not (Test-Path '/tmp/lk6/gestolen.mkv.x265oud'))
 Check 'origineel blijft staan'      (Test-Path '/tmp/lk6/gestolen.mkv')
 Check 'niet als geslaagd geteld'    ($sync.Success -eq 0)                            "($($sync.Success))"
 Check 'telt NIET voor de noodstop'  ($sync.FailStreak -eq 0 -and -not $sync.EmergencyStop) "(streak=$($sync.FailStreak))"
@@ -345,7 +351,7 @@ Stop-W $w | Out-Null
 Drain-Log | Out-Null
 Check 'lock was verdwenen'          ($weg)
 Check 'toch gewoon afgemaakt'       ($sync.Success -eq 1)                            "(succ=$($sync.Success))"
-Check 'uitvoer staat er'            (Test-Path '/tmp/lk7/hik.x265.mkv')
+Check 'uitvoer staat er'            (IsHevc '/tmp/lk7/hik.mkv')
 Check 'geen lock achtergebleven'    ((@(Get-ChildItem '/tmp/lk7' -Filter '*.x265lock')).Count -eq 0)
 ''
 '--- 12. bron met een uitvoer ernaast wordt niet nog eens gedaan ---'
@@ -386,6 +392,36 @@ while (-not $w.Handle.IsCompleted) { Start-Sleep -Milliseconds 150 }
 Stop-W $w | Out-Null
 Drain-Log | Out-Null
 Check 'kapotte uitvoer blokkeert niet' ($sync.Success -eq 1)                         "(succ=$($sync.Success))"
+
+# nieuwe naamgeving: <naam>.mkv als HEVC naast een .mp4-bron
+Fresh '/tmp/lk10'
+MkVid '/tmp/lk10/ander.mp4' 5
+& $FFMPEG -hide_banner -loglevel error -y -i '/tmp/lk10/ander.mp4' `
+    -c:v libx265 -preset ultrafast -crf 40 -c:a copy '/tmp/lk10/ander.mkv' 2>$null | Out-Null
+Reset-Run (Std-Settings -DeleteOrig $true -Subs $false -AudioMode 'aac' -TailCheck $false -Locks $true)
+$jm = New-Job -FullPath '/tmp/lk10/ander.mp4' -Dur 5.0
+Enqueue-Jobs @($jm)
+$w = Start-W $ConvertWorker 'conv'
+while (-not $w.Handle.IsCompleted) { Start-Sleep -Milliseconds 150 }
+Stop-W $w | Out-Null
+Drain-Log | Out-Null
+Check 'ook <naam>.mkv telt als omgezet' ($jm.Status -eq 'Al omgezet')                "($($jm.Status))"
+Check 'geen (2) ernaast'            (-not (Test-Path '/tmp/lk10/ander (2).mkv'))
+
+# de andere pc heeft het resultaat al op de plek van de bron gezet: de
+# bron zelf is nu HEVC (regel stond nog in de wachtrij van voor die tijd)
+Fresh '/tmp/lk11'
+MkVid '/tmp/lk11/al gedaan.mkv' 5 'libx265'
+Reset-Run (Std-Settings -DeleteOrig $true -Subs $false -AudioMode 'aac' -TailCheck $false -Locks $true)
+$jz = New-Job -FullPath '/tmp/lk11/al gedaan.mkv' -Dur 5.0
+Enqueue-Jobs @($jz)
+$w = Start-W $ConvertWorker 'conv'
+while (-not $w.Handle.IsCompleted) { Start-Sleep -Milliseconds 150 }
+Stop-W $w | Out-Null
+$lg = @(Drain-Log)
+Check 'bron zelf HEVC: overgeslagen' ($jz.Status -eq 'Al omgezet')                   "($($jz.Status))"
+Check 'met uitleg'                  ($jz.ResultText -match 'zelf HEVC')
+Check 'niet opnieuw omgezet'        ($sync.Success -eq 0 -and $sync.Failed -eq 0)
 ''
 
 '--- 13. de lokale kopie blokkeert de andere pc niet ---'

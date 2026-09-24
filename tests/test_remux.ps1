@@ -28,10 +28,10 @@ Fresh /tmp/rx/a
 MkSrc '/tmp/rx/a/film x264.mkv' 12
 $log = Run /tmp/rx/a 'film x264.mkv' $true
 $f = @(Get-ChildItem /tmp/rx/a -File | ForEach-Object Name)
-Check 'uitvoer bestaat'              ($f -contains 'film.x265.mkv')
+Check 'uitvoer bestaat'              ($f -contains 'film.mkv')
 Check 'origineel verwijderd'         (-not ($f -contains 'film x264.mkv'))
 Check 'geslaagd'                     ($sync.Success -eq 1)                 "(warned=$($sync.Warned) failed=$($sync.Failed))"
-Check 'video+audio+ondertitel over'  ((Streams '/tmp/rx/a/film.x265.mkv') -eq 'video,audio,subtitle') ("-> " + (Streams '/tmp/rx/a/film.x265.mkv'))
+Check 'video+audio+ondertitel over'  ((Streams '/tmp/rx/a/film.mkv') -eq 'video,audio,subtitle') ("-> " + (Streams '/tmp/rx/a/film.mkv'))
 Check 'log meldt de remux'           (($log -join ' ') -match 'Container opnieuw opbouwen')
 Check 'log meldt dat het lukte'      (($log -join ' ') -match 'Remux gelukt')
 Check 'max_interleave_delta gebruikt'(($log -join ' ') -match 'max_interleave_delta 0')
@@ -42,13 +42,13 @@ Check 'geen tijdelijke bestanden'    ($rest.Count -eq 0)                   "($($
 Fresh /tmp/rx/b
 MkSrc '/tmp/rx/b/film2 x264.mkv' 12
 $log = Run /tmp/rx/b 'film2 x264.mkv' $false
-Check 'uitvoer bestaat'              (Test-Path '/tmp/rx/b/film2.x265.mkv')
+Check 'uitvoer bestaat'              (Test-Path '/tmp/rx/b/film2.mkv')
 Check 'geslaagd'                     ($sync.Success -eq 1)
 Check 'geen remux in de log'         (-not (($log -join ' ') -match 'Container opnieuw opbouwen'))
 Check 'vlag zit toch in de encode'   (($log -join ' ') -match 'max_interleave_delta 0')
 ''
 '--- 3. interleaving van het eindresultaat gemeten ---'
-$m = & python3 /tmp/il/il2.py /tmp/rx/a/film.x265.mkv /tmp/rx/b/film2.x265.mkv
+$m = & python3 /tmp/il/il2.py /tmp/rx/a/film.mkv /tmp/rx/b/film2.mkv
 $m
 Check 'geen SLECHT in de meting'     (-not (($m -join ' ') -match 'SLECHT'))
 ''

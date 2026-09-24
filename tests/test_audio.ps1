@@ -71,33 +71,33 @@ $srcGap = 0.0
 '--- 1. kopieren: het gat blijft staan (dit is de klacht) ---'
 $log = RunOne /tmp/aud/c 'copy'
 $srcGap = GapOf '/tmp/aud/c/film x264.mkv'
-$g = GapOf '/tmp/aud/c/film.x265.mkv'
+$g = GapOf '/tmp/aud/c/film.mkv'
 Check 'bron heeft een gat van ~4 s'  ($srcGap -gt 3.5)                "bron=$([math]::Round($srcGap,3))s"
 Check 'kopieren neemt het gat over'  ($g -gt 3.5)                     "uit=$([math]::Round($g,3))s"
-Check 'kopieren wijzigt codec niet'  ((AudioOf '/tmp/aud/c/film.x265.mkv') -like 'aac*')
+Check 'kopieren wijzigt codec niet'  ((AudioOf '/tmp/aud/c/film.mkv') -like 'aac*')
 ''
 '--- 2. aac: het gat is weg ---'
 $log = RunOne /tmp/aud/a 'aac'
-$g = GapOf '/tmp/aud/a/film.x265.mkv'
+$g = GapOf '/tmp/aud/a/film.mkv'
 Check 'aac vult het gat op'          ($g -lt 0.1)                     "uit=$([math]::Round($g,3))s"
-Check 'aac decodeert schoon'         (DecodeClean '/tmp/aud/a/film.x265.mkv')
+Check 'aac decodeert schoon'         (DecodeClean '/tmp/aud/a/film.mkv')
 Check 'aac in de log gemeld'         (($log -join ' ') -match 'Geluid: aac')
 Check 'kanaalaantal gemeld'          (($log -join ' ') -match 'bron heeft 1 kanaal')
 ''
 '--- 3. ac3 en flac: ook geen gat ---'
 $log = RunOne /tmp/aud/b 'ac3'
-$g = GapOf '/tmp/aud/b/film.x265.mkv'
+$g = GapOf '/tmp/aud/b/film.mkv'
 Check 'ac3 vult het gat op'          ($g -lt 0.1)                     "uit=$([math]::Round($g,3))s"
-Check 'ac3 is ook echt ac3'          ((AudioOf '/tmp/aud/b/film.x265.mkv') -like 'ac3*')
+Check 'ac3 is ook echt ac3'          ((AudioOf '/tmp/aud/b/film.mkv') -like 'ac3*')
 $log = RunOne /tmp/aud/f 'flac'
-$g = GapOf '/tmp/aud/f/film.x265.mkv'
+$g = GapOf '/tmp/aud/f/film.mkv'
 Check 'flac vult het gat op'         ($g -lt 0.1)                     "uit=$([math]::Round($g,3))s"
-Check 'flac is ook echt flac'        ((AudioOf '/tmp/aud/f/film.x265.mkv') -like 'flac*')
+Check 'flac is ook echt flac'        ((AudioOf '/tmp/aud/f/film.mkv') -like 'flac*')
 ''
 '--- 4. 5.1 bron blijft 5.1 ---'
 $log = RunOne /tmp/aud/six 'aac' 6
-Check '5.1 blijft 6 kanalen'         ((AudioOf '/tmp/aud/six/film.x265.mkv') -eq 'aac,6') ("-> " + (AudioOf '/tmp/aud/six/film.x265.mkv'))
-Check '5.1 gat opgevuld'             ((GapOf '/tmp/aud/six/film.x265.mkv') -lt 0.1)
+Check '5.1 blijft 6 kanalen'         ((AudioOf '/tmp/aud/six/film.mkv') -eq 'aac,6') ("-> " + (AudioOf '/tmp/aud/six/film.mkv'))
+Check '5.1 gat opgevuld'             ((GapOf '/tmp/aud/six/film.mkv') -lt 0.1)
 ''
 '--- 5. sync blijft staan bij vertraagde audio ---'
 Fresh /tmp/aud/s
@@ -108,7 +108,7 @@ $w = Start-W $ConvertWorker 'conv'; while (-not $w.Handle.IsCompleted) { Start-S
 Drain-Log | Out-Null
 $pyOut = & python3 -c @"
 import subprocess
-raw = subprocess.run(['ffmpeg','-v','error','-i','/tmp/aud/s/vertraagd.x265.mkv','-map','0:a','-ac','1','-ar','8000','-f','f32le','-'],capture_output=True).stdout
+raw = subprocess.run(['ffmpeg','-v','error','-i','/tmp/aud/s/vertraagd.mkv','-map','0:a','-ac','1','-ar','8000','-f','f32le','-'],capture_output=True).stdout
 import struct
 a = struct.unpack('<%df' % (len(raw)//4), raw[:len(raw)//4*4])
 first = next((i for i,v in enumerate(a) if abs(v) > 0.01), -1)

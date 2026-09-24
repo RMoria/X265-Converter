@@ -30,7 +30,7 @@ $f = @(Get-ChildItem /tmp/ls/a -File | ForEach-Object Name)
 Check 'GEEN VCP'                    (-not (($log -join ' ') -cmatch 'GELUID VERLOREN'))
 Check 'verlies wel gemeld'          (($log -join ' ') -match 'geluid verloren aan het eind')
 Check 'onder de grens gemeld'       (($log -join ' ') -match 'Onder de grens van 30 s')
-Check 'bestand behouden'            (@($f | Where-Object { $_ -like '*.x265.mkv' }).Count -eq 1)
+Check 'bestand behouden'            ($f -contains 'klein.mkv')
 Check 'als geslaagd geteld'         ($sync.Success -eq 1)                       "(succ=$($sync.Success))"
 Check 'origineel verwijderd'        (-not ($f -contains 'klein x264.mkv'))
 Check 'geen VCP-hernoeming'         (@($f | Where-Object { $_ -like '*.VCP.*' }).Count -eq 0)
@@ -43,7 +43,7 @@ $log = Run /tmp/ls/b 'groot x264.mkv' 60 -3.0 -1.0
 $f = @(Get-ChildItem /tmp/ls/b -File | ForEach-Object Name | Sort-Object)
 Check 'wel VCP'                     (($log -join ' ') -cmatch 'GELUID VERLOREN')
 Check 'grens gemeld'                (($log -join ' ') -match 'meer dan de grens')
-Check 'resultaat weggegooid'        (@($f | Where-Object { $_ -like '*.x265.mkv' }).Count -eq 0)
+Check 'resultaat weggegooid'        (-not ($f -contains 'groot.mkv'))
 Check 'bron hernoemd'               ($f -contains 'groot x264.VCP.mkv')          ("map: " + ($f -join ', '))
 Check 'niet geslaagd'               ($sync.Success -eq 0)
 ''
@@ -54,7 +54,7 @@ $log = Run /tmp/ls/c 'kortebron x264.mkv' 60
 Check 'geslaagd zonder waarschuwing'($sync.Success -eq 1 -and $sync.Warned -eq 0) "(succ=$($sync.Success) warn=$($sync.Warned))"
 Check 'geen verliesmelding'         (-not (($log -join ' ') -match 'geluid verloren aan het eind'))
 Check 'wel opgevuld'                (($log -join ' ') -match 'Staart opgevuld')
-$e = AudioEnd '/tmp/ls/c/kortebron.x265.mkv'
+$e = AudioEnd '/tmp/ls/c/kortebron.mkv'
 Check 'geluid tot het einde'        ($e -gt 55)                                  ("laatste audio {0:N1} s" -f $e)
 ''
 '--- 4. gezonde bron: helemaal niets ---'

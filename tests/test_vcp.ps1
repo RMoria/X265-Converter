@@ -35,7 +35,7 @@ Check 'geslaagd, geen waarschuwing'  ($sync.Success -eq 1 -and $sync.Warned -eq 
 Check 'origineel verwijderd'         (-not ($f -contains 'kort x264.mkv'))
 Check 'bron-tekort herkend'          (($log -join ' ') -match 'Let op de bron')
 Check 'staart opgevuld'              (($log -join ' ') -match 'Staart opgevuld tot het einde')
-$e = AudioEnd '/tmp/vc/a/kort.x265.mkv'
+$e = AudioEnd '/tmp/vc/a/kort.mkv'
 Check 'geluid loopt nu tot het eind' ($e -gt 55)                                    ("laatste audio op {0:N1} s" -f $e)
 ''
 '--- 2. zelfde bron, opvullen uit: melden maar niet ingrijpen ---'
@@ -44,7 +44,7 @@ MkSrc '/tmp/vc/b/kort2 x264.mkv' 60 20
 $log = Run /tmp/vc/b 'kort2 x264.mkv' 60 $false
 Check 'geslaagd, geen waarschuwing'  ($sync.Success -eq 1 -and $sync.Warned -eq 0)
 Check 'wel gemeld'                   (($log -join ' ') -match 'Niets aan te doen bij het omzetten')
-Check 'niet opgevuld'                ((AudioEnd '/tmp/vc/b/kort2.x265.mkv') -lt 25)
+Check 'niet opgevuld'                ((AudioEnd '/tmp/vc/b/kort2.mkv') -lt 25)
 ''
 '--- 3. gezonde bron: niets bijzonders ---'
 Fresh /tmp/vc/c
@@ -69,7 +69,7 @@ $w = Start-W $ConvertWorker 'conv'; while (-not $w.Handle.IsCompleted) { Start-S
 $log = @(Drain-Log)
 $f = @(Get-ChildItem /tmp/vc/d -File | ForEach-Object Name | Sort-Object)
 Check 'VCP gemeld'                   (($log -join ' ') -cmatch 'GELUID VERLOREN')
-Check 'resultaat weggegooid'         (-not ($f | Where-Object { $_ -like '*.x265.mkv' }))
+Check 'resultaat weggegooid'         (-not ($f -contains 'verlies.mkv'))
 Check 'bron hernoemd naar VCP'       ($f -contains 'verlies x264.VCP.mkv')            ("map: " + ($f -join ', '))
 Check 'oude naam bestaat niet meer'  (-not ($f -contains 'verlies x264.mkv'))
 Check 'niet als geslaagd geteld'     ($sync.Success -eq 0)

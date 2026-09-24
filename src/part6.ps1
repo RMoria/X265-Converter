@@ -212,6 +212,8 @@ function Save-Settings {
             PadShortAudio      = [bool]$script:PadShortAudio
             VcpMarker          = [string]$script:VcpMarker
             RestoreQueue  = [bool]$script:RestoreQueue
+            RenameAfterConvert = [bool]$ui.chkRenameAfter.IsChecked
+            RenameRules   = $(if ($script:RenameRulesDelta -ne $null) { $script:RenameRulesDelta } else { New-RnDeltaTemplate })
             Window        = (Get-WindowPlacement)
             Totals        = $totals
             Queue         = $(if ($script:RestoreQueue) { @($rows.ToArray()) } else { @() })
@@ -479,6 +481,8 @@ if ($saved -ne $null) {
             if ($m -ge 2.0 -and $m -le 1440.0) { $script:LockStaleMinutes = $m }
         }
         if ($saved.RestoreQueue -ne $null) { $script:RestoreQueue = [bool]$saved.RestoreQueue }
+        if ($saved.RenameAfterConvert -ne $null) { $ui.chkRenameAfter.IsChecked = [bool]$saved.RenameAfterConvert }
+        if ($saved.RenameRules -ne $null) { $script:RenameRulesDelta = $saved.RenameRules }
         if ($saved.CheckAudioTail -ne $null) { $script:CheckAudioTail = [bool]$saved.CheckAudioTail }
         if ($saved.AudioTailTolerance -ne $null) {
             $tolD = 0.0
@@ -570,6 +574,16 @@ if ($saved -ne $null) {
         }
     } catch { }
 }
+
+# De naamregels: standaard plus de delta uit het instellingenbestand.
+# Staat er iets onbruikbaars in de delta, dan wordt dat genegeerd en
+# gemeld; het programma start gewoon.
+try { $sync.RenameRules = New-RnRules $script:RenameRulesDelta }
+catch {
+    Write-Log ("RenameRules in het instellingenbestand onbruikbaar ({0}); de standaardregels worden gebruikt." -f $_.Exception.Message) 'WAARS'
+    $sync.RenameRules = New-RnRules $null
+}
+foreach ($w in @($sync.RenameRules.Warnings)) { Write-Log ('Naamregels: ' + $w) 'WAARS' }
 
 # ---------------------------------------------------------------------
 # 11b. Bewaarde wachtrij terugzetten

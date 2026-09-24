@@ -1,8 +1,8 @@
 # Video naar H.265 / HEVC — PowerShell GUI
 
-**Versie 1.9 (23 september 2026)**
+**Versie 1.10 (24 september 2026)**
 
-Het versienummer staat achter in de venstertitel (`… [v1.9]`), als eerste regel
+Het versienummer staat achter in de venstertitel (`… [v1.10]`), als eerste regel
 in de log bij het opstarten, bovenaan `X265-Converter.error.log` en als `Version`
 in het instellingenbestand. Bij een melding is dat het eerste wat je wilt weten.
 Bijwerken gaat met `$AppVersion` en `$AppDate` bovenaan het script: tweede cijfer
@@ -11,6 +11,28 @@ erbij voor nieuw gedrag, derde cijfer voor een reparatie.
 Opvolger van `convert.bat`. Eén PowerShell-script met een grafische interface.
 
 ## Wat er per versie is veranderd
+
+### 1.10 — 24 september 2026
+
+- **Geen `.x265` meer in de naam.** Het resultaat heet nu `<naam>.mkv`. Komt dat
+  op precies de naam van de bron uit (een `.mkv` waar niets aan te schonen viel)
+  en staat *origineel verwijderen* aan, dan neemt het resultaat de plaats van de
+  bron in. Staat het uit, dan kunnen ze niet dezelfde naam hebben en wordt het
+  toch `<naam>.x265.mkv`. Bestanden van eerdere versies (`.x265.mkv`) worden
+  nog steeds herkend als "al omgezet".
+- **Hernoemen volgens de naamregels** (uit `Rename-Media.ps1`, nu ingebouwd):
+  een vinkje *Na conversie hernoemen volgens de naamregels* en een knop
+  *Bronmappen hernoemen…*. Zie [Hernoemen volgens de naamregels](#hernoemen-volgens-de-naamregels).
+  De regels zijn aan te passen met een delta onder `RenameRules` in het
+  instellingenbestand.
+- Een bestand dat al HEVC is geworden terwijl het nog in de wachtrij stond
+  (omdat een andere pc het resultaat op de plek van de bron heeft gezet), wordt
+  overgeslagen als **Al omgezet**. Er wordt ook nog een keer gekeken nádat het
+  lock is genomen, zodat het niet tussen twee controles door alsnog dubbel
+  gebeurt.
+- Instellingenbestanden van v1.9 hoeven niet te worden rechtgezet; de nieuwe
+  sleutels (`RenameAfterConvert`, `RenameRules`) komen er bij de eerste keer
+  opslaan vanzelf bij.
 
 ### 1.9 — 23 september 2026
 
@@ -200,10 +222,11 @@ Of rechtstreeks op het script:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File "C:\Tools\2-265\X265-Converter.ps1" -In "D:\in\film.mkv" -Out "E:\uit\film.mkv"
 ```
 
-**`-Out` wordt letterlijk gebruikt.** Er komt geen `.x265` achter en geen `(2)`
-erbij als het pad al bestaat — wie het pad zelf opgeeft krijgt precies dat pad,
-bestaande naam of niet. Ontbreekt de map, dan wordt die aangemaakt. Laat je
-`-Out` weg, dan gedraagt het zich als altijd: `<naam>.x265.mkv` naast de bron.
+**`-Out` wordt letterlijk gebruikt.** Er komt geen `(2)` erbij als het pad al
+bestaat, en er wordt ook niet hernoemd volgens de naamregels — wie het pad zelf
+opgeeft krijgt precies dat pad, bestaande naam of niet. Ontbreekt de map, dan
+wordt die aangemaakt. Laat je `-Out` weg, dan gedraagt het zich als altijd:
+`<naam>.mkv` naast de bron.
 
 **Draait er al een instantie, dan komt er geen tweede venster.** Het bestand
 gaat achteraan de wachtrij van het venster dat al openstaat, en de aanroep is
@@ -371,8 +394,9 @@ pc zag daarna een gewoon h264-bestand en begon er vrolijk opnieuw aan, met een
 `(2)` als resultaat.
 
 Daarom wordt er vlak voor het oppakken ook gekeken of er al een omgezet bestand
-naast de bron ligt. Ligt er een `<naam>.x265.mkv` die ook echt HEVC is, dan is
-het werk al gedaan: de regel gaat op **Al omgezet** en er wordt niets nog een
+naast de bron ligt. Ligt er een `<naam>.mkv` (of van voor v1.10 een
+`<naam>.x265.mkv`, of de naam volgens de naamregels) die ook echt HEVC is, of
+is de bron zelf inmiddels HEVC, dan is het werk al gedaan: de regel gaat op **Al omgezet** en er wordt niets nog een
 keer geëncodeerd. Een half of kapot uitvoerbestand telt niet mee — anders zou
 dat de bron voor altijd blokkeren.
 
@@ -560,8 +584,127 @@ die van een harde afsluiting zijn overgebleven.
      (10 pogingen, 10 s ertussen)
 
 Naamgeving: `h264` / `h.264` / `h 264` / `x264` en `avc` verdwijnen uit de naam,
-het resultaat wordt `<naam>.x265.mkv`. Bestaat die naam al, dan komt er `(2)`,
-`(3)` … achter in plaats van overschrijven.
+het resultaat wordt `<naam>.mkv`. Bestaat die naam al, dan komt er `(2)`,
+`(3)` … achter in plaats van overschrijven. Twee uitzonderingen, allebei als
+`<naam>.mkv` precies de bron zelf is:
+
+- **origineel verwijderen aan** — de bron gaat eerst opzij als
+  `<naam>.mkv.x265oud`, het resultaat komt op zijn plek, en daarna gaat
+  `.x265oud` weg. Mislukt het verplaatsen, dan gaat de bron terug.
+- **origineel verwijderen uit** — twee bestanden kunnen niet dezelfde naam
+  hebben, dus dan wordt het `<naam>.x265.mkv`.
+
+Staat *Na conversie hernoemen volgens de naamregels* aan, dan krijgt het
+resultaat daarna nog zijn nette naam (zie hieronder).
+
+## Hernoemen volgens de naamregels
+
+Wat eerst het losse `Rename-Media.ps1` was, zit nu in het programma zelf. Twee
+manieren:
+
+- **Vinkje *Na conversie hernoemen volgens de naamregels*** (standaard uit). Elk
+  omgezet bestand krijgt na de conversie meteen zijn nette naam, samen met zijn
+  ondertitels. Dat gebeurt pas ná het verplaatsen en het opruimen van het
+  origineel, nog vóór het lock losgaat: het lock hoort bij de naam van de bron,
+  en die blijft tot dan toe ongemoeid. Bestaat de doelnaam al, dan blijft alles
+  zoals het is (in de log staat `CONFLICT`). Er wordt in deze stand nooit iets
+  verwijderd. Niet bij een vast uitvoerpad met `-Out`.
+- **Knop *Bronmappen hernoemen…***. Doorloopt de bronmappen uit de lijst (niet
+  hele schijven — alleen wat jij hebt gekozen, met hun submappen) en maakt eerst
+  een **overzicht**: niets wordt aangeraakt. Je ziet
+  hoeveel er wordt hernoemd, hoeveel dubbelen naar de Prullenbak gaan en hoeveel
+  conflicten er zijn; het volledige overzicht staat in
+  `hernoem_voorbeeld_<tijd>.csv` naast het instellingenbestand. Pas na **Ja**
+  wordt het uitgevoerd. De knop werkt alleen als er niets loopt, en zolang hij
+  bezig is kan er geen conversie starten.
+
+Bestanden met een lock van een andere pc blijven van tafel, samen met hun
+ondertitels — ook als dat lock er pas tussen overzicht en uitvoeren bij is
+gekomen. Werkbestanden (`x265_*`) doen niet mee.
+
+Elke hernoeming komt in een undo-bestand (`hernoem_undo_<tijd>.csv`, bij de
+automatische stand één per dag). Terugdraaien:
+
+```
+powershell -ExecutionPolicy Bypass -File X265-Converter.ps1 -HernoemTerug "hernoem_undo_20260924_101500.csv"
+powershell -ExecutionPolicy Bypass -File X265-Converter.ps1 -HernoemTerug "hernoem_undo_20260924_101500.csv" -Uitvoeren
+```
+
+De eerste regel laat alleen zien wat er terug zou gaan. Verwijderde dubbelen
+komen hiermee niet terug; die staan in de Prullenbak (op een netwerkschijf zijn
+ze echt weg).
+
+### Wat de regels doen
+
+Resultaat: `Serienaam.SxxExx(.Titel).ext`, of `Serienaam.NN.ext` als er geen
+seizoen bekend is; films worden `CamelCaseNaam.ext` of
+`CamelCaseNaam.2.Titel.ext` (vervolgdeel). De extensie gaat in kleine letters.
+
+1. **Opschonen.** Een groepsnaam tussen `[...]` vooraan en alle andere `[...]`
+   verdwijnen; `(...)` met een resolutie of een hash van 8 hex-tekens ook; andere
+   haakjes worden weggehaald en de inhoud blijft (`Armageddon (1)` → `Armageddon 1`).
+2. **Rommel.** Vanaf het eerste rommel-token (zie de lijst hieronder) is alles weg,
+   ook de releasegroep erachter. `WEB-DL`, `x265-MeGusta` en `DTS-HD` worden als
+   geheel herkend. `END` alleen in hoofdletters, zodat "The End" blijft staan.
+3. **Afleveringsnummer**, eerste treffer wint: `S01E05` (ook `s1e5`, `S01 E05`,
+   `S01E01-E02`); anime met `- 12` (met een seizoen in de naam `Naam S2 - 12` →
+   `Naam.S02E12`); aaneengeschreven `1407` → `S14E07` (geen jaartal); en
+   `Naam.01.Titel`. In een map `film`, `films` of `movies` wordt alleen de eerste
+   gebruikt en is de rest een film. Nummers krijgen minstens 2 cijfers (`5` →
+   `05`), langere houden hun breedte (`0001`).
+4. **Serienaam.** Woorden aan elkaar in CamelCase (`ONE PIECE` → `OnePiece`),
+   jaartallen aan het eind weg, een laatste `S2` wordt het seizoen. Voorvoegsels
+   die niet in de mapnaam staan gaan weg: map `Punisher` met
+   `marvels.the.punisher` geeft `ThePunisher`. Algemene mappen (`serie`, `film`,
+   `anime`, een schijfletter …) en seizoensmappen tellen daarbij niet.
+5. **Titel** van de aflevering met punten: `Welcome.to.the.Playground`.
+6. **Films**: alles vanaf het laatste jaartal weg; een los getal van 1-2 cijfers
+   maakt er een vervolgdeel van.
+7. **Dubbelen** (knop): video's die in dezelfde map op dezelfde naam uitkomen. De
+   beste blijft — bron BluRay/Remux > WEB > HDTV, dan 2160p > 1080p > 720p >
+   480p — bij gelijke stand de eerste. De rest gaat met zijn ondertitels naar de
+   Prullenbak.
+8. **Ondertitels** volgen hun video (de langste videonaam die het begin van de
+   ondertitelnaam is), met de rest als achtervoegsel: ` nl` → `.nl`,
+   `.en.forced` blijft. Zonder video wordt de ondertitel zelf opgeschoond en
+   gaat de taaltag er weer achter.
+9. **Uitvoeren**: twee bestanden op dezelfde doelnaam → de tweede wordt
+   `CONFLICT` en blijft staan. Al goed → niets. Eerst de verwijderingen, dan het
+   hernoemen. Alleen hoofdletters anders gaat via een tijdelijke naam.
+
+### De regels aanpassen
+
+In het instellingenbestand staat onder `RenameRules` alleen wat **afwijkt** van
+de ingebouwde standaard, per lijst een `…Add` en een `…Remove`. De sleutels
+staan er na de eerste keer opslaan al in, leeg:
+
+```json
+"RenameAfterConvert": true,
+"RenameRules": {
+    "JunkAdd": [ "prutsgroep", "nlsubbed" ],
+    "JunkRemove": [ "web" ],
+    "ExcludePathAdd": [ "*\\prive\\*" ],
+    "GenericDirsAdd": [ "kinderen" ],
+    "LangTagsAdd": [ "fr", "fre" ]
+}
+```
+
+| lijst | standaard | soort |
+|---|---|---|
+| `VideoExtensions` | `.mkv .mp4 .avi .m4v` | extensies (punt mag weg) |
+| `SubExtensions` | `.srt .sub .idx .ass .ssa` | extensies |
+| `ExcludePath` | `*\3d\*` | wildcard op het volledige pad |
+| `Junk` | `\d{3,4}[pi] [248]k uhd x26[45] h26[45] hevc avc xvid divx \d{1,2}bit web webdl webrip bluray bdrip brrip hdtv hdrip dvdrip remux repack proper extended internal limited amzn nf dsnp hmax atvp hulu pcok multi hdr\d* dv av1 vp9 ddp?\d* aac\d* ac3 dts truehd atmos \dch jp korean japanese eng engsub sub subs nlsub nlsubs` | reguliere expressies, hoofdletterongevoelig, het hele woord |
+| `JunkCaseSensitive` | `END` | idem, hoofdlettergevoelig |
+| `GenericDirs` | `serie series tv film films movies anime marvel dc [a-z]:` | reguliere expressies op een mapnaam |
+| `FilmDirs` | `film films movies` | reguliere expressies op een mapnaam |
+| `Articles` | `the a an de het` | woorden |
+| `LangTags` | `nl nld dut dutch nederlands en eng english forced sdh hi` | reguliere expressies |
+
+Een `…Remove` moet precies een standaardwaarde noemen. Wat niet klopt — een
+onbekende `Remove`, een ongeldige reguliere expressie — wordt genegeerd en bij
+het opstarten in de log gemeld; het programma start gewoon. De volgorde van de
+stappen en de dubbelen-scores liggen vast.
 
 ## De wachtrij
 
@@ -1092,7 +1235,7 @@ uit te zetten met `SmartRetry` in het instellingenbestand.
 ## Ondertitels
 
 Staat er naast de video een ondertitelbestand met dezelfde naam, dan krijgt dat
-de nieuwe naam mee. `Film x264.srt` wordt `Film.x265.srt`.
+de nieuwe naam mee. `Film x264.srt` wordt `Film.srt`.
 
 - **Origineel verwijderen aan** → omnoemen.
 - **Origineel verwijderen uit** → kopiëren; de originele ondertitels blijven bij
@@ -1101,7 +1244,7 @@ de nieuwe naam mee. `Film x264.srt` wordt `Film.x265.srt`.
   gekopieerd in plaats van omgenoemd, zodat het origineel zijn eigen ondertitels
   houdt.
 - Een taalcode of vlag blijft staan: `Film x264.en.forced.srt` wordt
-  `Film.x265.en.forced.srt`.
+  `Film.en.forced.srt`.
 - `.idx` en `.sub` horen bij elkaar en gaan samen mee.
 - Alleen bestanden waarvan de naam begint met exact de naam van de video **en**
   waarvan de rest met een punt begint. `Film x264b.srt` gaat dus niet mee.

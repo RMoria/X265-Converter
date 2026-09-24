@@ -23,7 +23,7 @@ $log = Run /tmp/m4/a 'tc x264.mp4' 10
 Check 'conversie geslaagd'           ($sync.Success -eq 1)                              "(succ=$($sync.Success) fail=$($sync.Failed))"
 Check 'geen herpoging nodig'         (-not (($log -join ' ') -match 'Eerste poging mislukt'))
 Check 'datastroom gemeld'            (($log -join ' ') -match 'kan niet in mkv, niet meegenomen')
-Check 'uitvoer heeft beeld+geluid'   ((Streams '/tmp/m4/a/tc.x265.mkv') -eq 'video,audio') ("-> " + (Streams '/tmp/m4/a/tc.x265.mkv'))
+Check 'uitvoer heeft beeld+geluid'   ((Streams '/tmp/m4/a/tc.mkv') -eq 'video,audio') ("-> " + (Streams '/tmp/m4/a/tc.mkv'))
 ''
 '--- 2. mp4 met mov_text-ondertitels EN een timecodespoor ---'
 Fresh /tmp/m4/b
@@ -35,8 +35,8 @@ $log = Run /tmp/m4/b 'mt x264.mp4' 10
 Check 'conversie geslaagd'           ($sync.Success -eq 1)                              "(succ=$($sync.Success) fail=$($sync.Failed))"
 Check 'geen herpoging nodig'         (-not (($log -join ' ') -match 'Eerste poging mislukt'))
 Check 'omzetting naar srt gemeld'    (($log -join ' ') -match 'worden omgezet naar srt')
-Check 'ondertitel is meegekomen'     ((Streams '/tmp/m4/b/mt.x265.mkv') -eq 'video,audio,subtitle') ("-> " + (Streams '/tmp/m4/b/mt.x265.mkv'))
-Check 'en is nu subrip'              (((& $FP -v error -select_streams s:0 -show_entries stream=codec_name -of csv=p=0 '/tmp/m4/b/mt.x265.mkv') -join '') -match 'subrip')
+Check 'ondertitel is meegekomen'     ((Streams '/tmp/m4/b/mt.mkv') -eq 'video,audio,subtitle') ("-> " + (Streams '/tmp/m4/b/mt.mkv'))
+Check 'en is nu subrip'              (((& $FP -v error -select_streams s:0 -show_entries stream=codec_name -of csv=p=0 '/tmp/m4/b/mt.mkv') -join '') -match 'subrip')
 ''
 '--- 3. mp4 met omslagafbeelding ---'
 Fresh /tmp/m4/c
@@ -47,7 +47,7 @@ Check 'bron heeft 2 videosporen'     ((@((Streams '/tmp/m4/c/cov x264.mp4') -spl
 $log = Run /tmp/m4/c 'cov x264.mp4' 10
 Check 'conversie geslaagd'           ($sync.Success -eq 1)                              "(succ=$($sync.Success) fail=$($sync.Failed))"
 Check 'omslag overgeslagen'          (($log -join ' ') -match 'omslagafbeelding, niet meegenomen')
-Check 'uitvoer 1x beeld, 1x geluid'  ((Streams '/tmp/m4/c/cov.x265.mkv') -eq 'video,audio') ("-> " + (Streams '/tmp/m4/c/cov.x265.mkv'))
+Check 'uitvoer 1x beeld, 1x geluid'  ((Streams '/tmp/m4/c/cov.mkv') -eq 'video,audio') ("-> " + (Streams '/tmp/m4/c/cov.mkv'))
 ''
 '--- 4. gewone mkv met srt: alles blijft gewoon meekomen ---'
 Fresh /tmp/m4/d
@@ -55,7 +55,7 @@ Fresh /tmp/m4/d
   -map 0:v -map 1:a -map 2:s -c:v libx264 -preset ultrafast -crf 36 -c:a aac -c:s srt '/tmp/m4/d/ok x264.mkv' 2>$null | Out-Null
 $log = Run /tmp/m4/d 'ok x264.mkv' 10
 Check 'conversie geslaagd'           ($sync.Success -eq 1)
-Check 'ondertitel gekopieerd'        ((Streams '/tmp/m4/d/ok.x265.mkv') -eq 'video,audio,subtitle')
+Check 'ondertitel gekopieerd'        ((Streams '/tmp/m4/d/ok.mkv') -eq 'video,audio,subtitle')
 Check 'geen onnodige meldingen'      (-not (($log -join ' ') -match 'niet meegenomen'))
 ''
 "====> $ok goed, $bad fout"

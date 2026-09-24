@@ -47,7 +47,7 @@ Check 'alle drie geslaagd'          ($sync.Success -eq 3)                    "(s
 $gestart = @($log | Where-Object { $_ -match 'Lokale kopie gestart' }).Count
 Check 'drie kopieen gestart'        ($gestart -eq 3)                         "(=$gestart)"
 Check 'niets over in de werkmap'    ((PreDirs).Count -eq 0)                  "($((PreDirs).Count) over)"
-Check 'drie uitvoerbestanden'       ((@(Get-ChildItem /tmp/pf/b -Filter '*.x265.mkv')).Count -eq 3)
+Check 'drie uitvoerbestanden'       ((@(1..3 | Where-Object { Test-Path "/tmp/pf/b/nr$_.mkv" })).Count -eq 3)
 ''
 '--- 4. mislukt bestand: kopie ook dan opgeruimd ---'
 Fresh /tmp/pf/c

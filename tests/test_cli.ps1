@@ -96,18 +96,25 @@ Fresh2
 "bezet     : {0}" -f (New-OutputPath -SourcePath "/tmp/cli/out/bezet.mkv")
 "vast bezet: {0}" -f (New-OutputPath -SourcePath "/tmp/cli/out/bezet.mkv" -Fixed "/tmp/cli/out/bezet.x265.mkv")
 "leeg vast : {0}" -f (New-OutputPath -SourcePath "/tmp/cli/out/film.mkv" -Fixed "   ")
+"mp4 bron  : {0}" -f (New-OutputPath -SourcePath "/tmp/cli/out/clip.mp4")
+"vervangt  : {0}" -f (New-OutputPath -SourcePath "/tmp/cli/out/film.mkv" -ReplaceSource $true)
+"avi bezet : {0}" -f (New-OutputPath -SourcePath "/tmp/cli/out/a.avi")
 ')
 function Fresh2 {
     if (Test-Path '/tmp/cli/out') { Remove-Item -Recurse -Force '/tmp/cli/out' }
     New-Item -ItemType Directory -Path '/tmp/cli/out' -Force | Out-Null
     Set-Content '/tmp/cli/out/bezet.x265.mkv' 'x'
+    Set-Content '/tmp/cli/out/a.mkv' 'x'
 }
 $r = & $sb
 $r
 $t = ($r -join ' ')
 Check 'vaste naam letterlijk'    ($t -match 'vast\s+: /tmp/cli/out/nieuwe map/eigen naam\.mkv')
 Check 'map wordt aangemaakt'     ($t -match 'map gemaakt: True')
-Check 'zonder -Out gewoon .x265' ($t -match 'vrij\s+: /tmp/cli/out/film\.x265\.mkv')
+Check 'zelfde naam, origineel blijft: .x265' ($t -match 'vrij\s+: /tmp/cli/out/film\.x265\.mkv')
+Check 'andere extensie: gewoon .mkv' ($t -match 'mp4 bron\s+: /tmp/cli/out/clip\.mkv')
+Check 'origineel weg: neemt de plaats in' ($t -match 'vervangt\s+: /tmp/cli/out/film\.mkv')
+Check 'bezette .mkv krijgt (2)'  ($t -match 'avi bezet : /tmp/cli/out/a \(2\)\.mkv')
 Check 'zonder -Out wel (2)'      ($t -match 'bezet\s+: /tmp/cli/out/bezet\.x265 \(2\)\.mkv')
 Check 'met -Out geen (2)'        ($t -match 'vast bezet: /tmp/cli/out/bezet\.x265\.mkv')
 Check 'witruimte telt als leeg'  ($t -match 'leeg vast : /tmp/cli/out/film\.x265\.mkv')

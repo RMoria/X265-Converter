@@ -277,6 +277,715 @@ function Test-LockFree {
     return ((Get-LockAge $pad) -ge $StaleMinutes)
 }
 
+# ---------------------------------------------------------------------
+# 7b. Naamregels: bestanden eenduidig hernoemen
+#
+#     Overgenomen uit Rename-Media.ps1. Video's worden
+#         Serienaam.SxxExx(.Titel).ext   of   Serienaam.NN.ext
+#     films worden CamelCaseNaam.ext of CamelCaseNaam.2.Titel.ext, en
+#     ondertitels volgen de naam van hun video (met de taal erachter).
+#
+#     De lijsten waar de regels op draaien (rommel-tokens, extensies,
+#     uitgesloten paden, algemene mapnamen, lidwoorden, taaltags) staan
+#     hier als standaard. Wie andere regels wil zet in het
+#     instellingenbestand onder "RenameRules" alleen de VERSCHILLEN:
+#     <Lijst>Add en <Lijst>Remove. Zie New-RnRules.
+#
+#     Deze functies gaan ook mee naar de werk-threads (zie $HelperText):
+#     ze lezen de regels uit $sync.RenameRules, en bouwen die zelf met
+#     de standaard als er nog niets staat.
+# ---------------------------------------------------------------------
+
+function New-RnRules {
+    param($Delta)
+
+    $lijsten = [ordered]@{
+        VideoExtensions   = @('.mkv', '.mp4', '.avi', '.m4v')
+        SubExtensions     = @('.srt', '.sub', '.idx', '.ass', '.ssa')
+        ExcludePath       = @('*\3d\*')
+        Junk              = @(
+            '\d{3,4}[pi]', '[248]k', 'uhd', 'x26[45]', 'h26[45]', 'hevc', 'avc', 'xvid', 'divx', '\d{1,2}bit',
+            'web', 'webdl', 'webrip', 'bluray', 'bdrip', 'brrip', 'hdtv', 'hdrip', 'dvdrip', 'remux',
+            'repack', 'proper', 'extended', 'internal', 'limited',
+            'amzn', 'nf', 'dsnp', 'hmax', 'atvp', 'hulu', 'pcok', 'multi',
+            'hdr\d*', 'dv', 'av1', 'vp9', 'ddp?\d*', 'aac\d*', 'ac3', 'dts', 'truehd', 'atmos', '\dch',
+            'jp', 'korean', 'japanese', 'eng', 'engsub', 'sub', 'subs', 'nlsub', 'nlsubs')
+        JunkCaseSensitive = @('END')
+        GenericDirs       = @('serie', 'series', 'tv', 'film', 'films', 'movies', 'anime', 'marvel', 'dc', '[a-z]:')
+        FilmDirs          = @('film', 'films', 'movies')
+        Articles          = @('the', 'a', 'an', 'de', 'het')
+        LangTags          = @('nl', 'nld', 'dut', 'dutch', 'nederlands', 'en', 'eng', 'english', 'forced', 'sdh', 'hi')
+    }
+    # Lijsten waarvan de regels reguliere expressies zijn
+    $regexLijsten = @('Junk', 'JunkCaseSensitive', 'GenericDirs', 'FilmDirs', 'LangTags')
+
+    $waarsch = New-Object System.Collections.ArrayList
+
+    function Get-DeltaLijst($naam) {
+        if ($Delta -eq $null) { return @() }
+        $w = $null
+        if ($Delta -is [System.Collections.IDictionary]) {
+            if ($Delta.Contains($naam)) { $w = $Delta[$naam] }
+        }
+        else {
+            $p = $Delta.PSObject.Properties[$naam]
+            if ($p) { $w = $p.Value }
+        }
+        if ($w -eq $null) { return @() }
+        return @(@($w) | ForEach-Object { [string]$_ } | Where-Object { $_ -and $_.Trim() })
+    }
+
+    $uit = @{}
+    foreach ($naam in $lijsten.Keys) {
+        $l = New-Object System.Collections.ArrayList
+        foreach ($x in $lijsten[$naam]) { [void]$l.Add([string]$x) }
+
+        foreach ($x in (Get-DeltaLijst ($naam + 'Remove'))) {
+            $weg = @($l | Where-Object { $_ -ieq $x.Trim() })
+            if ($weg.Count -eq 0) { [void]$waarsch.Add("RenameRules.$($naam)Remove: '$x' staat niet in de standaardlijst") }
+            foreach ($y in $weg) { [void]$l.Remove($y) }
+        }
+        foreach ($x in (Get-DeltaLijst ($naam + 'Add'))) {
+            $x = $x.Trim()
+            if ($regexLijsten -contains $naam) {
+                try { [void][regex]::new('^(?:' + $x + ')$') }
+                catch { [void]$waarsch.Add("RenameRules.$($naam)Add: '$x' is geen geldige reguliere expressie en wordt genegeerd"); continue }
+            }
+            if (-not (@($l) | Where-Object { $_ -ieq $x })) { [void]$l.Add($x) }
+        }
+
+        if ($naam -like '*Extensions') {
+            $n = New-Object System.Collections.ArrayList
+            foreach ($x in $l) {
+                $e = $x.Trim().ToLower()
+                if (-not $e.StartsWith('.')) { $e = '.' + $e }
+                if (-not ($n -contains $e)) { [void]$n.Add($e) }
+            }
+            $l = $n
+        }
+        $uit[$naam] = [string[]]@($l)
+    }
+
+    function Samen([string[]]$d) {
+        if ($d.Count -eq 0) { return '(?!)' }      # lege lijst: past nergens op
+        return ($d -join '|')
+    }
+
+    $uit.JunkRegex         = '^(?i)(?:' + (Samen $uit.Junk) + ')(?:[-.].*)?$'
+    $uit.JunkCsRegex       = '^(?:' + (Samen $uit.JunkCaseSensitive) + ')$'
+    $uit.GenericDirRegex   = '^(?i)(?:' + (Samen $uit.GenericDirs) + ')$'
+    $uit.SeasonDirRegex    = '^(?i)(s\d{1,2}|season[ ._]?\d{1,2}|seizoen[ ._]?\d{1,2})$'
+    $uit.FilmDirRegex      = '(?i)[\\/](?:' + (Samen $uit.FilmDirs) + ')[\\/]'
+    $uit.LangRegex         = '(?i)((?:[._ ](?:' + (Samen $uit.LangTags) + '))+)$'
+    $uit.YearRegex         = '^(19|20)\d{2}$'
+    $uit.Warnings          = [string[]]@($waarsch)
+    return $uit
+}
+
+# Een leeg sjabloon voor in het instellingenbestand: alle sleutels die
+# een delta kunnen dragen, zodat je ziet wat er kan.
+function New-RnDeltaTemplate {
+    $o = [ordered]@{}
+    foreach ($n in @('VideoExtensions','SubExtensions','ExcludePath','Junk','JunkCaseSensitive',
+                     'GenericDirs','FilmDirs','Articles','LangTags')) {
+        $o[$n + 'Add']    = @()
+        $o[$n + 'Remove'] = @()
+    }
+    return [pscustomobject]$o
+}
+
+function Get-RnRules {
+    $r = $sync.RenameRules
+    if ($r -eq $null) { $r = New-RnRules $null; $sync.RenameRules = $r }
+    return $r
+}
+
+function Test-RnJunk([string]$tok) {
+    $R = Get-RnRules
+    return ($tok -match $R.JunkRegex) -or ($tok -cmatch $R.JunkCsRegex)
+}
+
+function Remove-RnBrackets([string]$s) {
+    # [..] is in de praktijk altijd rommel (hash, groep, [1080p], [EZTVx.to])
+    $s = [regex]::Replace($s, '\[[^\]]*\]', ' ')
+    # (1080p) / (A1B2C3D4) weg, andere haakjes "uitpakken": Armageddon (1) -> Armageddon 1
+    $s = [regex]::Replace($s, '\((?:\d{3,4}[pi]|[0-9A-Fa-f]{8})\)', ' ')
+    $s = $s -replace '[()]', ' '
+    return $s
+}
+
+function Get-RnCleanWord([string]$w) {
+    return [regex]::Replace($w, '[^\p{L}\p{N}]', '')
+}
+
+function Get-RnNameTokens([string]$s) {
+    $s = $s -replace '&', ' and '
+    $out = @()
+    foreach ($t in ($s -split '[\s._\-,;:+]+')) {
+        $c = Get-RnCleanWord $t
+        if ($c) { $out += $c }
+    }
+    return ,$out
+}
+
+function Get-RnStopAtJunk([string[]]$tokens) {
+    $out = @()
+    foreach ($t in $tokens) {
+        if (Test-RnJunk $t) { break }
+        $out += $t
+    }
+    return ,$out
+}
+
+function Get-RnRawTokensUntilJunk([string]$s) {
+    # Koppeltekens binnen een token blijven heel, zodat "WEB-DL",
+    # "x265-MeGusta" en "DTS-HD" als geheel herkend worden.
+    $out = @()
+    foreach ($t in ($s -split '[\s._,;]+')) {
+        if (-not $t) { continue }
+        if (Test-RnJunk $t) { break }
+        $out += $t
+    }
+    return ,$out
+}
+
+function Test-RnAllCaps([string[]]$tokens) {
+    $letters = (-join $tokens) -replace '[^\p{L}]', ''
+    return ($letters.Length -ge 3) -and ($letters -cmatch '^\p{Lu}+$')
+}
+
+function ConvertTo-RnCamel([string[]]$tokens) {
+    $allCaps = Test-RnAllCaps $tokens
+    $sb = ''
+    foreach ($t in $tokens) {
+        if ($allCaps) { $t = $t.ToLower() }
+        $sb += $t.Substring(0, 1).ToUpper() + $t.Substring(1)
+    }
+    return $sb
+}
+
+function Format-RnTitle([string]$s) {
+    $s = $s -replace '&', ' and '
+    $raw = Get-RnRawTokensUntilJunk $s
+    $words = @()
+    foreach ($t in $raw) {
+        $c = [regex]::Replace($t, '[^\p{L}\p{N}\-]', '').Trim('-')
+        if ($c) { $words += $c }
+    }
+    if ($words.Count -eq 0) { return '' }
+    if (Test-RnAllCaps $words) {
+        $words = @($words | ForEach-Object { $_.Substring(0, 1).ToUpper() + $_.Substring(1).ToLower() })
+    }
+    return ($words -join '.')
+}
+
+function Get-RnShowDirHint([string]$fullPath) {
+    $R = Get-RnRules
+    $dirs = ($fullPath -split '[\\/]')
+    if ($dirs.Count -lt 2) { return $null }
+    $dirs = $dirs[0..($dirs.Count - 2)]
+    for ($i = $dirs.Count - 1; $i -ge 0; $i--) {
+        $d = $dirs[$i].Trim()
+        if (-not $d) { continue }
+        if ($d -match $R.GenericDirRegex -or $d -match $R.SeasonDirRegex) { continue }
+        # "Supernatural.S01" -> "Supernatural"
+        $d = $d -replace '(?i)[ ._\-]+(s\d{1,2}|season[ ._]?\d{1,2}|seizoen[ ._]?\d{1,2})$', ''
+        return $d
+    }
+    return $null
+}
+
+function Remove-RnPrefixByDir([string[]]$tokens, [string]$dirHint) {
+    $R = Get-RnRules
+    if (-not $dirHint -or $tokens.Count -lt 2) { return ,$tokens }
+    $dirTokens = Get-RnNameTokens $dirHint
+    if ($dirTokens.Count -eq 0) { return ,$tokens }
+    $first = $dirTokens[0].ToLower()
+    for ($i = 0; $i -lt $tokens.Count; $i++) {
+        if ($tokens[$i].ToLower() -eq $first) {
+            if ($i -eq 0) { return ,$tokens }
+            $start = $i
+            # Lidwoord direct ervoor mag blijven ("marvels.the.punisher" -> "ThePunisher")
+            if ($R.Articles -contains $tokens[$i - 1].ToLower()) { $start = $i - 1 }
+            return ,@($tokens[$start..($tokens.Count - 1)])
+        }
+    }
+    return ,$tokens
+}
+
+function Get-RnShowName([string]$rawShow, [string]$dirHint, [ref]$seasonOut) {
+    $R = Get-RnRules
+    $rawShow = Remove-RnBrackets $rawShow
+    $tokens = Get-RnNameTokens $rawShow
+    $tokens = Get-RnStopAtJunk $tokens
+    if ($tokens.Count -gt 1 -and $tokens[-1] -match '^(?i)s(\d{1,2})$') {
+        if ($seasonOut) { $seasonOut.Value = [int]$Matches[1] }
+        $tokens = @($tokens[0..($tokens.Count - 2)])
+    }
+    while ($tokens.Count -gt 1 -and $tokens[-1] -match $R.YearRegex) {
+        $tokens = @($tokens[0..($tokens.Count - 2)])
+    }
+    $tokens = Remove-RnPrefixByDir $tokens $dirHint
+    if ($tokens.Count -eq 0) { return $null }
+    return (ConvertTo-RnCamel $tokens)
+}
+
+function Format-RnEp([string]$num) {
+    $n = $num.TrimStart('0')
+    if (-not $n) { $n = '0' }
+    # minimaal 2 cijfers; langere nummers (One Piece 0001) houden hun breedte
+    $width = [Math]::Max(2, $num.Length)
+    return $n.PadLeft($width, '0')
+}
+
+function Split-RnPath([string]$p) {
+    $i = $p.LastIndexOfAny([char[]]@('\', '/'))
+    if ($i -lt 0) { return @('', $p, '') }
+    return @($p.Substring(0, $i), $p.Substring($i + 1), $p.Substring($i, 1))
+}
+
+function Join-RnParts($show, $ep, $title, $ext, $dirHint) {
+    if (-not $show -and $dirHint) { $show = ConvertTo-RnCamel (Get-RnNameTokens $dirHint) }
+    if (-not $show) { return $null }
+    $n = "$show.$ep"
+    if ($title) { $n += ".$title" }
+    return "$n$ext"
+}
+
+# Nieuwe BESTANDSNAAM (zonder map) volgens de naamregels, of $null als de
+# naam niet te herkennen is.
+function Get-RnNewName([string]$fullPath) {
+    $R = Get-RnRules
+    $fileName = (Split-RnPath $fullPath)[1]
+    $ext      = [IO.Path]::GetExtension($fileName).ToLower()
+    $base     = [IO.Path]::GetFileNameWithoutExtension($fileName)
+    $dirHint  = Get-RnShowDirHint $fullPath
+    $isFilm   = $fullPath -match $R.FilmDirRegex
+
+    # "[CameEsp] Dungeon Meshi - 01" -> groep vooraan eraf
+    $work = $base -replace '^\s*\[[^\]]*\]\s*', ''
+
+    # 1) SxxExx (ook s01e01, S01E01-E02)
+    $m = [regex]::Match($work, '(?i)(?<![A-Za-z0-9])S(\d{1,2})[ ._]?E(\d{1,4})(?:-?E(\d{1,4}))?(?![0-9])')
+    if ($m.Success) {
+        $season = [int]$m.Groups[1].Value
+        $ep = 'S{0:D2}E{1}' -f $season, (Format-RnEp $m.Groups[2].Value)
+        if ($m.Groups[3].Success) { $ep += '-E' + (Format-RnEp $m.Groups[3].Value) }
+        $show  = Get-RnShowName $work.Substring(0, $m.Index) $dirHint ([ref]$null)
+        $title = Format-RnTitle (Remove-RnBrackets $work.Substring($m.Index + $m.Length))
+        return (Join-RnParts $show $ep $title $ext $dirHint)
+    }
+
+    # 2) Anime: "Naam - 12", "Naam S2 - 12v2", "One Piece - 0001"
+    $clean = Remove-RnBrackets $work
+    $m = [regex]::Match($clean, '^(?<show>.+)[\s._]-\s*(?<ep>\d{1,4})(?:v\d+)?(?=[\s._]|$)')
+    if ($m.Success -and -not $isFilm) {
+        $season = $null
+        $show = Get-RnShowName $m.Groups['show'].Value $dirHint ([ref]$season)
+        if ($null -ne $season) { $ep = 'S{0:D2}E{1}' -f $season, (Format-RnEp $m.Groups['ep'].Value) }
+        else                   { $ep = Format-RnEp $m.Groups['ep'].Value }
+        return (Join-RnParts $show $ep '' $ext $dirHint)
+    }
+
+    # 3) "Futurama 1407 Titel" -> S14E07  (geen jaartal)
+    $m = [regex]::Match($clean, '^(?<show>.+?)[\s._](?<s>\d{1,2})[^\d\s]?(?<e>\d{2})(?:[\s._](?<rest>.*))?$')
+    if ($m.Success -and -not $isFilm -and ($m.Groups['s'].Value + $m.Groups['e'].Value) -notmatch $R.YearRegex) {
+        $show  = Get-RnShowName $m.Groups['show'].Value $dirHint ([ref]$null)
+        $ep    = 'S{0:D2}E{1}' -f [int]$m.Groups['s'].Value, $m.Groups['e'].Value
+        $title = Format-RnTitle $m.Groups['rest'].Value
+        return (Join-RnParts $show $ep $title $ext $dirHint)
+    }
+
+    # 4) "Death.Note.01.Rebirth" -> DeathNote.01.Rebirth
+    $m = [regex]::Match($clean, '^(?<show>.+?)[\s._](?<ep>\d{2,3})(?:[\s._](?<rest>.*))?$')
+    if ($m.Success -and -not $isFilm) {
+        $show  = Get-RnShowName $m.Groups['show'].Value $dirHint ([ref]$null)
+        $ep    = Format-RnEp $m.Groups['ep'].Value
+        $title = Format-RnTitle $m.Groups['rest'].Value
+        return (Join-RnParts $show $ep $title $ext $dirHint)
+    }
+
+    # 5) Film: Naam  of  Naam.Nummer.Titel  (jaartal verdwijnt)
+    $tokens = Get-RnStopAtJunk (Get-RnNameTokens $clean)
+    for ($i = $tokens.Count - 1; $i -ge 1; $i--) {
+        if ($tokens[$i] -match $R.YearRegex) { $tokens = @($tokens[0..($i - 1)]); break }
+    }
+    $tokens = Remove-RnPrefixByDir $tokens $dirHint
+    if ($tokens.Count -eq 0) { return $null }
+
+    for ($i = 1; $i -lt $tokens.Count; $i++) {
+        if ($tokens[$i] -match '^\d{1,2}$') {
+            $name = ConvertTo-RnCamel @($tokens[0..($i - 1)])
+            $n    = [int]$tokens[$i]
+            $rest = @()
+            if ($i + 1 -lt $tokens.Count) { $rest = @($tokens[($i + 1)..($tokens.Count - 1)]) }
+            $title = Format-RnTitle ($rest -join ' ')
+            $out = "$name.$n"
+            if ($title) { $out += ".$title" }
+            return "$out$ext"
+        }
+    }
+    return (ConvertTo-RnCamel $tokens) + $ext
+}
+
+# Kwaliteit voor het kiezen tussen dubbelen: bron (BluRay > WEB > HDTV),
+# dan resolutie.
+function Get-RnQuality([string]$name) {
+    $src = 0
+    if     ($name -match '(?i)blu-?ray|bdrip|brrip|bdremux|remux') { $src = 3 }
+    elseif ($name -match '(?i)web')                               { $src = 2 }
+    elseif ($name -match '(?i)hdtv')                              { $src = 1 }
+    $res = 0
+    if     ($name -match '(?i)2160p|\b4k\b|uhd') { $res = 2160 }
+    elseif ($name -match '(?i)1080[pi]')         { $res = 1080 }
+    elseif ($name -match '(?i)720p')             { $res = 720 }
+    elseif ($name -match '(?i)480p|576p')        { $res = 480 }
+    return ($src * 10000 + $res)
+}
+
+function Get-RnLangSuffix([string]$rest) {
+    # ".nl" -> ".nl", "." -> "", " Dutch.dut" -> ".Dutch.dut"
+    $parts = @($rest -split '[\s._]+' | Where-Object { $_ })
+    if ($parts.Count -eq 0) { return '' }
+    return '.' + ($parts -join '.')
+}
+
+function Test-RnExcluded([string]$fullPath) {
+    $R = Get-RnRules
+    $p = $fullPath -replace '/', '\'
+    foreach ($pat in $R.ExcludePath) { if ($p -like $pat) { return $true } }
+    return $false
+}
+
+# -----------------------------------------------------------------
+#  Het plan voor een hele verzameling bestanden
+#
+#  $Files  : volledige paden (video's en ondertitels door elkaar)
+#  $Frozen : paden die NIET mogen veranderen (bijvoorbeeld omdat een
+#            andere pc er een lock op heeft). Ze doen wel mee als
+#            'OVERGESLAGEN (in gebruik)', zodat hun ondertitels ze nog
+#            herkennen en niet een eigen kant op gaan.
+# -----------------------------------------------------------------
+function Get-RnPlan {
+    param([string[]]$Files, [string[]]$Frozen = @())
+
+    $R = Get-RnRules
+    $frozenSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($f in @($Frozen)) { if ($f) { [void]$frozenSet.Add($f) } }
+
+    $all = @($Files | Where-Object { $_ -and -not (Test-RnExcluded $_) })
+    $videoFiles = @($all | Where-Object { $R.VideoExtensions -contains [IO.Path]::GetExtension($_).ToLower() })
+    $subFiles   = @($all | Where-Object { $R.SubExtensions   -contains [IO.Path]::GetExtension($_).ToLower() })
+
+    $videos = New-Object System.Collections.Generic.List[object]
+    foreach ($f in $videoFiles) {
+        $parts = Split-RnPath $f
+        $sep   = if ($parts[2]) { $parts[2] } else { [IO.Path]::DirectorySeparatorChar }
+        $new   = $null
+        $status = 'OK'
+        if ($frozenSet.Contains($f)) {
+            $status = 'OVERGESLAGEN (in gebruik)'; $new = $parts[1]
+        }
+        else {
+            try { $new = Get-RnNewName $f } catch { $new = $null }
+            if (-not $new) { $status = 'OVERGESLAGEN (niet herkend)'; $new = $parts[1] }
+        }
+        $videos.Add([pscustomobject]@{
+            Type = 'video'; Status = $status; Map = $parts[0]; Sep = $sep
+            Oud = $parts[1]; Nieuw = $new; OldPath = $f; NewPath = ($parts[0] + $sep + $new)
+            OldBase = [IO.Path]::GetFileNameWithoutExtension($parts[1])
+            NewBase = [IO.Path]::GetFileNameWithoutExtension($new)
+            Quality = (Get-RnQuality $parts[1]); KeptAs = ''
+        })
+    }
+
+    # Dubbelen: zelfde nieuwe naam in dezelfde map. De beste blijft.
+    foreach ($grp in ($videos | Where-Object { $_.Status -eq 'OK' } | Group-Object { $_.NewPath.ToLower() })) {
+        if ($grp.Count -lt 2) { continue }
+        # Hoogste kwaliteit; bij gelijke kwaliteit de eerste in de lijst
+        $best = $null
+        foreach ($v in $grp.Group) { if ($best -eq $null -or $v.Quality -gt $best.Quality) { $best = $v } }
+        foreach ($v in $grp.Group) {
+            if ($v -ne $best) { $v.Status = 'VERWIJDEREN (dubbel)'; $v.KeptAs = $best.Oud }
+        }
+    }
+    foreach ($v in $videos) { if ($v.Status -eq 'OK' -and $v.Nieuw -ceq $v.Oud) { $v.Status = 'AL GOED' } }
+
+    $byDir = @{}
+    foreach ($v in $videos) {
+        $k = $v.Map.ToLower()
+        if (-not $byDir.ContainsKey($k)) { $byDir[$k] = New-Object System.Collections.Generic.List[object] }
+        $byDir[$k].Add($v)
+    }
+
+    $subs = New-Object System.Collections.Generic.List[object]
+    foreach ($f in $subFiles) {
+        $parts = Split-RnPath $f
+        $sep   = if ($parts[2]) { $parts[2] } else { [IO.Path]::DirectorySeparatorChar }
+        $ext   = [IO.Path]::GetExtension($parts[1]).ToLower()
+        $base  = [IO.Path]::GetFileNameWithoutExtension($parts[1])
+        $bl    = $base.ToLower()
+
+        # 1) video in dezelfde map waarvan de naam het begin is (langste wint)
+        $match = $null
+        if ($byDir.ContainsKey($parts[0].ToLower())) {
+            foreach ($v in $byDir[$parts[0].ToLower()]) {
+                $vb = $v.OldBase.ToLower()
+                if ($bl -eq $vb -or ($bl.StartsWith($vb) -and $bl.Length -gt $vb.Length -and ('. _-'.IndexOf($bl[$vb.Length]) -ge 0))) {
+                    if (-not $match -or $v.OldBase.Length -gt $match.OldBase.Length) { $match = $v }
+                }
+            }
+        }
+
+        $status = 'OK'; $new = $null; $note = ''
+        if ($frozenSet.Contains($f)) {
+            $status = 'OVERGESLAGEN (in gebruik)'; $new = $parts[1]
+        }
+        elseif ($match -and $match.Status -eq 'OVERGESLAGEN (in gebruik)') {
+            # De video is bij een andere pc onder handen; die neemt de
+            # ondertitels straks zelf mee. Afblijven.
+            $status = 'OVERGESLAGEN (video in gebruik)'; $new = $parts[1]; $note = "video: $($match.Oud)"
+        }
+        elseif ($match) {
+            $lang = Get-RnLangSuffix $base.Substring($match.OldBase.Length)
+            $new  = $match.NewBase + $lang + $ext
+            if ($match.Status -like 'VERWIJDEREN*') { $status = 'VERWIJDEREN (hoort bij dubbel)' }
+            $note = "video: $($match.Oud)"
+        }
+        else {
+            # 2) geen video: de ondertitel zelf opschonen (taalcode blijft)
+            $lang = ''; $core = $base
+            $lm = [regex]::Match($base, $R.LangRegex)
+            if ($lm.Success) { $lang = Get-RnLangSuffix $lm.Groups[1].Value; $core = $base.Substring(0, $lm.Index) }
+            $tmpPath = $parts[0] + $sep + $core + $ext
+            $n = $null
+            try { $n = Get-RnNewName $tmpPath } catch { $n = $null }
+            if ($n) {
+                $new = [IO.Path]::GetFileNameWithoutExtension($n) + $lang + $ext
+                $status = 'OK (geen video gevonden)'
+                $key = ([IO.Path]::GetFileNameWithoutExtension($n) -split '\.')[0..1] -join '.'
+                if ($byDir.ContainsKey($parts[0].ToLower())) {
+                    $cand = @($byDir[$parts[0].ToLower()] | Where-Object {
+                        $_.Status -notlike 'VERWIJDEREN*' -and (($_.NewBase -split '\.')[0..1] -join '.') -eq $key })
+                    if ($cand.Count -eq 1) { $new = $cand[0].NewBase + $lang + $ext; $status = 'OK'; $note = "video: $($cand[0].Oud)" }
+                }
+            }
+            else {
+                $status = 'OVERGESLAGEN (niet herkend)'; $new = $parts[1]
+            }
+        }
+        if ($status -like 'OK*' -and $new -ceq $parts[1]) { $status = 'AL GOED' }
+        $subs.Add([pscustomobject]@{
+            Type = 'ondertitel'; Status = $status; Map = $parts[0]; Sep = $sep
+            Oud = $parts[1]; Nieuw = $new; OldPath = $f; NewPath = ($parts[0] + $sep + $new)
+            OldBase = $base; NewBase = [IO.Path]::GetFileNameWithoutExtension($new)
+            Quality = 0; KeptAs = $note
+        })
+    }
+
+    # Botsingen: twee bestanden met dezelfde doelnaam -> de eerste wint.
+    # Een bestand dat blijft staan (al goed, overgeslagen) bezet zijn naam.
+    $taken = @{}
+    $rijen = [object[]]$videos.ToArray() + [object[]]$subs.ToArray()
+    foreach ($r in $rijen) {
+        if ($r.Status -like 'VERWIJDEREN*') { continue }
+        # Blijft staan (of verandert alleen van hoofdletters): die plek is bezet
+        if ($r.Status -like 'OVERGESLAGEN*' -or $r.Status -eq 'AL GOED' -or
+            $r.NewPath.ToLower() -eq $r.OldPath.ToLower()) { $taken[$r.OldPath.ToLower()] = $r.Oud }
+    }
+    foreach ($r in $rijen) {
+        if ($r.Status -like 'VERWIJDEREN*' -or $r.Status -like 'OVERGESLAGEN*' -or $r.Status -eq 'AL GOED') { continue }
+        $k = $r.NewPath.ToLower()
+        if ($taken.ContainsKey($k) -and $k -ne $r.OldPath.ToLower()) {
+            $r.Status = 'CONFLICT (zelfde naam)'; $r.KeptAs = "botst met: $($taken[$k])"
+        }
+        else { $taken[$k] = $r.Oud }
+    }
+
+    return ,$rijen
+}
+
+function Remove-RnToRecycle([string]$Path) {
+    $recycle = $false
+    if ($env:OS -eq 'Windows_NT') {
+        try { Add-Type -AssemblyName Microsoft.VisualBasic -ErrorAction Stop; $recycle = $true } catch { }
+    }
+    if ($recycle) {
+        [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($Path, 'OnlyErrorDialogs', 'SendToRecycleBin')
+    }
+    else {
+        Remove-Item -LiteralPath $Path -Force -ErrorAction Stop
+    }
+    if (Test-Path -LiteralPath $Path) { throw 'bestand staat er nog' }
+}
+
+# Staat er (op een hoofdlettergevoelig bestandssysteem) al een ANDER
+# bestand met precies de doelnaam? Alleen nodig als de namen alleen in
+# hoofdletters verschillen; op Windows is dat nooit zo.
+function Test-RnOtherExists([string]$OldPath, [string]$NewPath) {
+    $n = [IO.Path]::GetFileName($NewPath)
+    $o = [IO.Path]::GetFileName($OldPath)
+    if ($n -ceq $o) { return $false }
+    try {
+        foreach ($x in [IO.Directory]::GetFiles([IO.Path]::GetDirectoryName($NewPath))) {
+            if ([IO.Path]::GetFileName($x) -ceq $n) { return $true }
+        }
+    } catch { }
+    return $false
+}
+
+# Een hernoeming, ook als alleen de hoofdletters verschillen (dan moet het
+# via een tijdelijke naam, anders doet Windows niets).
+function Rename-RnFile([string]$OldPath, [string]$NewPath) {
+    $newName = [IO.Path]::GetFileName($NewPath)
+    if ($OldPath.ToLower() -eq $NewPath.ToLower()) {
+        $tmp = $newName + '.tmp_rename'
+        Rename-Item -LiteralPath $OldPath -NewName $tmp -ErrorAction Stop
+        Rename-Item -LiteralPath (Join-Path ([IO.Path]::GetDirectoryName($OldPath)) $tmp) -NewName $newName -ErrorAction Stop
+    }
+    else {
+        Rename-Item -LiteralPath $OldPath -NewName $newName -ErrorAction Stop
+    }
+}
+
+function Add-RnUndo([string]$UndoFile, [object[]]$Rows) {
+    if ([string]::IsNullOrWhiteSpace($UndoFile) -or $Rows.Count -eq 0) { return }
+    try {
+        $rows2 = @($Rows | ForEach-Object { [pscustomobject]@{ OldPath = $_.OldPath; NewPath = $_.NewPath } })
+        if (Test-Path -LiteralPath $UndoFile) {
+            $rows2 | Export-Csv -LiteralPath $UndoFile -NoTypeInformation -Encoding UTF8 -Append
+        } else {
+            $rows2 | Export-Csv -LiteralPath $UndoFile -NoTypeInformation -Encoding UTF8
+        }
+    }
+    catch { W ("Het undo-bestand kon niet worden bijgewerkt: {0}" -f $_.Exception.Message) 'WAARS' }
+}
+
+# -----------------------------------------------------------------
+#  Een plan uitvoeren: eerst de dubbelen naar de Prullenbak, dan
+#  hernoemen. $StillFree is een scriptblock dat per pad zegt of het nog
+#  mag (bijvoorbeeld: is er intussen geen lock op gekomen?).
+# -----------------------------------------------------------------
+function Invoke-RnPlan {
+    param([object[]]$Plan, [string]$UndoFile, [scriptblock]$StillFree = $null)
+
+    $done    = New-Object System.Collections.Generic.List[object]
+    $deleted = New-Object System.Collections.Generic.List[string]
+    $failed  = 0
+
+    foreach ($r in @($Plan | Where-Object { $_.Status -like 'VERWIJDEREN*' })) {
+        if ($sync.ScanCancel) { break }
+        if (-not (Test-Path -LiteralPath $r.OldPath)) { continue }
+        if ($StillFree -and -not (& $StillFree $r.OldPath)) { W ("Overgeslagen, inmiddels in gebruik: {0}" -f $r.OldPath) 'WAARS'; continue }
+        try {
+            Remove-RnToRecycle $r.OldPath
+            $deleted.Add($r.OldPath)
+            W ("Dubbel naar de Prullenbak: {0}  (blijft: {1})" -f $r.OldPath, $r.KeptAs)
+        }
+        catch { $failed++; W ("Verwijderen mislukt: {0}: {1}" -f $r.OldPath, $_.Exception.Message) 'WAARS' }
+    }
+
+    foreach ($r in @($Plan | Where-Object { $_.Status -like 'OK*' })) {
+        if ($sync.ScanCancel) { break }
+        if (-not (Test-Path -LiteralPath $r.OldPath)) { continue }
+        $caseOnly = $r.OldPath.ToLower() -eq $r.NewPath.ToLower()
+        if ((Test-Path -LiteralPath $r.NewPath) -and (-not $caseOnly -or (Test-RnOtherExists $r.OldPath $r.NewPath))) {
+            W ("Doel bestaat al, overgeslagen: {0}" -f $r.NewPath) 'WAARS'; continue
+        }
+        if ($StillFree -and -not (& $StillFree $r.OldPath)) { W ("Overgeslagen, inmiddels in gebruik: {0}" -f $r.OldPath) 'WAARS'; continue }
+        try {
+            Rename-RnFile $r.OldPath $r.NewPath
+            $done.Add($r)
+            W ("Hernoemd: {0}  ->  {1}" -f $r.Oud, $r.Nieuw)
+        }
+        catch { $failed++; W ("Hernoemen mislukt: {0}: {1}" -f $r.OldPath, $_.Exception.Message) 'WAARS' }
+    }
+
+    Add-RnUndo $UndoFile ([object[]]$done.ToArray())
+    return [pscustomobject]@{
+        Renamed = [object[]]$done.ToArray()
+        Deleted = [string[]]$deleted.ToArray()
+        Failed  = $failed
+    }
+}
+
+# -----------------------------------------------------------------
+#  Eén net omgezet bestand hernoemen, met zijn ondertitels
+#
+#  Geen dubbelen-afhandeling: er wordt nooit iets verwijderd. Bestaat de
+#  doelnaam al, dan blijft alles zoals het is.
+#  Geeft het (eventueel nieuwe) pad van de video terug.
+# -----------------------------------------------------------------
+function Invoke-RnSingle {
+    param([string]$VideoPath, [string]$UndoFile)
+
+    $R = Get-RnRules
+    if (Test-RnExcluded $VideoPath) { return $VideoPath }
+
+    $dir = [IO.Path]::GetDirectoryName($VideoPath)
+    $new = $null
+    try { $new = Get-RnNewName $VideoPath } catch { $new = $null }
+    if (-not $new) { W ("Hernoemen: naam niet herkend, blijft staan: {0}" -f ([IO.Path]::GetFileName($VideoPath))) 'WAARS'; return $VideoPath }
+
+    $newPath = Join-Path $dir $new
+    if ($newPath -ceq $VideoPath) { return $VideoPath }                  # al goed
+    $caseOnly = $newPath.ToLower() -eq $VideoPath.ToLower()
+    if ((Test-Path -LiteralPath $newPath) -and (-not $caseOnly -or (Test-RnOtherExists $VideoPath $newPath))) {
+        W ("Hernoemen overgeslagen (CONFLICT), {0} bestaat al." -f $new) 'WAARS'
+        return $VideoPath
+    }
+
+    # Ondertitels die bij DEZE video horen: de langste passende videonaam
+    # in de map wint, zodat 'Naam 2.nl.srt' niet bij 'Naam.mkv' belandt.
+    $oldBase = [IO.Path]::GetFileNameWithoutExtension($VideoPath)
+    $newBase = [IO.Path]::GetFileNameWithoutExtension($new)
+    $inMap = @()
+    try { $inMap = @(Get-ChildItem -LiteralPath $dir -File -ErrorAction Stop) } catch { }
+    $videoBases = @($inMap | Where-Object { $R.VideoExtensions -contains $_.Extension.ToLower() } |
+                    ForEach-Object { [IO.Path]::GetFileNameWithoutExtension($_.Name) })
+    $subPlan = New-Object System.Collections.Generic.List[object]
+    foreach ($c in @($inMap | Where-Object { $R.SubExtensions -contains $_.Extension.ToLower() })) {
+        $b  = [IO.Path]::GetFileNameWithoutExtension($c.Name)
+        $bl = $b.ToLower()
+        $best = $null
+        foreach ($vb in $videoBases) {
+            $v = $vb.ToLower()
+            if ($bl -eq $v -or ($bl.StartsWith($v) -and $bl.Length -gt $v.Length -and ('. _-'.IndexOf($bl[$v.Length]) -ge 0))) {
+                if (-not $best -or $vb.Length -gt $best.Length) { $best = $vb }
+            }
+        }
+        if ($best -eq $null -or $best.ToLower() -ne $oldBase.ToLower()) { continue }
+        $subNew = $newBase + (Get-RnLangSuffix $b.Substring($oldBase.Length)) + $c.Extension.ToLower()
+        $subPlan.Add([pscustomobject]@{ OldPath = $c.FullName; NewPath = (Join-Path $dir $subNew); Oud = $c.Name; Nieuw = $subNew })
+    }
+
+    $done = New-Object System.Collections.Generic.List[object]
+    try {
+        Rename-RnFile $VideoPath $newPath
+        $done.Add([pscustomobject]@{ OldPath = $VideoPath; NewPath = $newPath })
+        W ("Hernoemd volgens de naamregels: {0}  ->  {1}" -f ([IO.Path]::GetFileName($VideoPath)), $new)
+    }
+    catch {
+        W ("Hernoemen mislukt: {0}" -f $_.Exception.Message) 'WAARS'
+        return $VideoPath
+    }
+    foreach ($s in $subPlan) {
+        if ($s.OldPath -ceq $s.NewPath) { continue }
+        if ((Test-Path -LiteralPath $s.NewPath) -and (($s.OldPath.ToLower() -ne $s.NewPath.ToLower()) -or (Test-RnOtherExists $s.OldPath $s.NewPath))) {
+            W ("Ondertitel niet hernoemd, {0} bestaat al." -f $s.Nieuw) 'WAARS'; continue
+        }
+        try {
+            Rename-RnFile $s.OldPath $s.NewPath
+            $done.Add([pscustomobject]@{ OldPath = $s.OldPath; NewPath = $s.NewPath })
+            W ("Ondertitel hernoemd: {0}  ->  {1}" -f $s.Oud, $s.Nieuw)
+        }
+        catch { W ("Ondertitel {0} niet hernoemd: {1}" -f $s.Oud, $_.Exception.Message) 'WAARS' }
+    }
+    Add-RnUndo $UndoFile ([object[]]$done.ToArray())
+    return $newPath
+}
+
+
 $HelperText = @"
 function Format-Size {
 $(${function:Format-Size})
@@ -322,6 +1031,93 @@ $(${function:Test-LockOwned})
 }
 function Test-LockFree {
 $(${function:Test-LockFree})
+}
+function New-RnRules {
+$(${function:New-RnRules})
+}
+function New-RnDeltaTemplate {
+$(${function:New-RnDeltaTemplate})
+}
+function Get-RnRules {
+$(${function:Get-RnRules})
+}
+function Test-RnJunk {
+$(${function:Test-RnJunk})
+}
+function Remove-RnBrackets {
+$(${function:Remove-RnBrackets})
+}
+function Get-RnCleanWord {
+$(${function:Get-RnCleanWord})
+}
+function Get-RnNameTokens {
+$(${function:Get-RnNameTokens})
+}
+function Get-RnStopAtJunk {
+$(${function:Get-RnStopAtJunk})
+}
+function Get-RnRawTokensUntilJunk {
+$(${function:Get-RnRawTokensUntilJunk})
+}
+function Test-RnAllCaps {
+$(${function:Test-RnAllCaps})
+}
+function ConvertTo-RnCamel {
+$(${function:ConvertTo-RnCamel})
+}
+function Format-RnTitle {
+$(${function:Format-RnTitle})
+}
+function Get-RnShowDirHint {
+$(${function:Get-RnShowDirHint})
+}
+function Remove-RnPrefixByDir {
+$(${function:Remove-RnPrefixByDir})
+}
+function Get-RnShowName {
+$(${function:Get-RnShowName})
+}
+function Format-RnEp {
+$(${function:Format-RnEp})
+}
+function Split-RnPath {
+$(${function:Split-RnPath})
+}
+function Join-RnParts {
+$(${function:Join-RnParts})
+}
+function Get-RnNewName {
+$(${function:Get-RnNewName})
+}
+function Get-RnQuality {
+$(${function:Get-RnQuality})
+}
+function Get-RnLangSuffix {
+$(${function:Get-RnLangSuffix})
+}
+function Test-RnExcluded {
+$(${function:Test-RnExcluded})
+}
+function Get-RnPlan {
+$(${function:Get-RnPlan})
+}
+function Remove-RnToRecycle {
+$(${function:Remove-RnToRecycle})
+}
+function Test-RnOtherExists {
+$(${function:Test-RnOtherExists})
+}
+function Rename-RnFile {
+$(${function:Rename-RnFile})
+}
+function Add-RnUndo {
+$(${function:Add-RnUndo})
+}
+function Invoke-RnPlan {
+$(${function:Invoke-RnPlan})
+}
+function Invoke-RnSingle {
+$(${function:Invoke-RnSingle})
 }
 "@
 

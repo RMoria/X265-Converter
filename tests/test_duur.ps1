@@ -68,7 +68,7 @@ $lg = @(Drain-Log)
 $sync.Ffprobe = $echte
 Check 'duur blijft nul'          ($j3.DurationSec -eq 0)
 Check 'en dat wordt gemeld'      (($lg -join ' ') -match 'niet te bepalen')
-Check 'toch gewoon omgezet'      ($sync.Success -eq 1 -and (Test-Path '/tmp/du3/kapot.x265.mkv'))
+Check 'toch gewoon omgezet'      ($sync.Success -eq 1 -and (Test-Path '/tmp/du3/kapot.mkv'))
 ''
 
 '--- 4. de balk gaat heen en weer in plaats van dood op nul ---'

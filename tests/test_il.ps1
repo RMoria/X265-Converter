@@ -24,7 +24,7 @@ function Run { param($Dir,$Name,[bool]$Remux,[bool]$Auto,[int]$Dur=60)
 Fresh /tmp/ilt/a
 MkSrc '/tmp/ilt/a/film x264.mkv' 60
 $log = Run /tmp/ilt/a 'film x264.mkv' $false $true 60
-Check 'uitvoer bestaat'            (Test-Path '/tmp/ilt/a/film.x265.mkv')
+Check 'uitvoer bestaat'            (Test-Path '/tmp/ilt/a/film.mkv')
 Check 'geslaagd'                   ($sync.Success -eq 1)                     "(warned=$($sync.Warned))"
 Check 'er is gemeten'              (($log -join ' ') -match 'Container in orde|Container niet in orde|Interleaving niet gemeten')
 Check 'gemeten: in orde'           (($log -join ' ') -match 'Container in orde')
@@ -35,7 +35,7 @@ Check 'vlag zit in de encode'      (($log -join ' ') -match 'max_interleave_delt
 Fresh /tmp/ilt/b
 MkSrc '/tmp/ilt/b/film2 x264.mkv' 60
 $log = Run /tmp/ilt/b 'film2 x264.mkv' $true $true 60
-Check 'uitvoer bestaat'            (Test-Path '/tmp/ilt/b/film2.x265.mkv')
+Check 'uitvoer bestaat'            (Test-Path '/tmp/ilt/b/film2.mkv')
 Check 'remux uitgevoerd'           (($log -join ' ') -match 'Container opnieuw opbouwen')
 Check 'remux gelukt'               (($log -join ' ') -match 'Remux gelukt')
 Check 'niet eerst gemeten'         (-not (($log -join ' ') -match 'Container in orde'))
@@ -44,7 +44,7 @@ Check 'niet eerst gemeten'         (-not (($log -join ' ') -match 'Container in 
 Fresh /tmp/ilt/c
 MkSrc '/tmp/ilt/c/film3 x264.mkv' 60
 $log = Run /tmp/ilt/c 'film3 x264.mkv' $false $false 60
-Check 'uitvoer bestaat'            (Test-Path '/tmp/ilt/c/film3.x265.mkv')
+Check 'uitvoer bestaat'            (Test-Path '/tmp/ilt/c/film3.mkv')
 Check 'niet gemeten'               (-not (($log -join ' ') -match 'Container in orde'))
 Check 'niet geremuxt'              (-not (($log -join ' ') -match 'Container opnieuw opbouwen'))
 ''
@@ -56,7 +56,7 @@ $m = & (Get-Process -Id $PID).Path -NoProfile -Command @"
 `$sync = @{ Ffprobe = '$FFPROBE'; Cancel = `$false }
 $($ConvertWorker.ToString() -replace '(?s)^.*?    function Test-Interleave', '    function Test-Interleave' -replace '(?s)\r?\n    # -+\r?\n    #  Container opnieuw opbouwen.*$','')
 `$a = Test-Interleave -FilePath '/tmp/ilt/kort.mkv' -DurationSec 120
-`$b = Test-Interleave -FilePath '/tmp/ilt/a/film.x265.mkv' -DurationSec 60
+`$b = Test-Interleave -FilePath '/tmp/ilt/a/film.mkv' -DurationSec 60
 'kapot: checked={0} ok={1} bad={2}/{3}' -f `$a.Checked,`$a.Ok,`$a.Bad,`$a.Punten
 'goed : checked={0} ok={1} bad={2}/{3}' -f `$b.Checked,`$b.Ok,`$b.Bad,`$b.Punten
 "@

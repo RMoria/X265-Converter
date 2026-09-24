@@ -248,6 +248,12 @@ function Set-WatchHoursText {
 # bestanden er nog, en wat zijn nu de grootte, duur en codec).
 $script:RestoreQueue = $false
 
+# Naamregels voor het hernoemen (na de conversie en met de knop
+# 'Bronmappen hernoemen'). Hier staat alleen de DELTA op de ingebouwde
+# standaard, zoals die uit het instellingenbestand komt (sleutel
+# "RenameRules"); zie New-RnRules. $null = alleen de standaard.
+$script:RenameRulesDelta = $null
+
 # Nacontrole op het geluid van het nieuwe bestand: haalt de audiotrack het
 # einde van de film? Zo niet, dan status 'Let op' en het origineel blijft
 # staan. Staat niet in de GUI (te veel knoppen) maar wel in het

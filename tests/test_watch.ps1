@@ -87,7 +87,7 @@ $p8 = Get-Content -Raw $SrcDir/part8.ps1
 Check 'nascan heeft een geheugen'  ($p7 -match '\$script:NascanGedaan = \$false')
 Check 'en slaat over als het al is geweest' ($p7 -match 'if \(\$script:NascanGedaan\) \{ return \$false \}')
 Check 'zet de vlag voor het starten'        ($p7 -match '\$script:NascanGedaan  = \$true')
-Check 'handmatig starten geeft hem vrij'    ($p7 -match '(?s)btnStart\.Add_Click.{0,200}NascanGedaan = \$false')
+Check 'handmatig starten geeft hem vrij'    ($p7 -match '(?s)btnStart\.Add_Click.{0,500}NascanGedaan = \$false')
 Check 'automatisch kijken ook'              ($p7 -match '(?s)function Start-WatchScan.{0,1400}NascanGedaan = \$false')
 Check 'haalt stale regels uit de lijst'     ($p7 -match "(?s)function Start-Nascan.{0,1500}'Andere pc bezig'.{0,200}Remove-JobRow")
 ''

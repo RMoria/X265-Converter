@@ -91,7 +91,7 @@ $ConvertWorker = {
     }
 
     function New-OutputPath {
-        param([string]$SourcePath, [string]$Fixed = '')
+        param([string]$SourcePath, [string]$Fixed = '', [bool]$ReplaceSource = $false)
 
         # Is er met -Out een naam meegegeven, dan is dat de naam. Geen
         # '.x265' erachter, geen '(2)' erbij: wie het pad zelf opgeeft
@@ -107,12 +107,25 @@ $ConvertWorker = {
             return $Fixed
         }
 
+        # Sinds v1.10 gewoon <naam>.mkv, zonder '.x265' ertussen. Komt dat
+        # op precies de bron uit (een .mkv waar niets aan de naam te
+        # schonen viel), dan:
+        #  - origineel verwijderen aan: het resultaat neemt de plaats van
+        #    de bron in (de verwisseling zelf gebeurt bij het verplaatsen);
+        #  - origineel bewaren: dan kunnen ze niet dezelfde naam hebben en
+        #    wordt het toch <naam>.x265.mkv.
         $dir   = [IO.Path]::GetDirectoryName($SourcePath)
         $base  = Get-CleanBase ([IO.Path]::GetFileNameWithoutExtension($SourcePath))
-        $cand  = Join-Path $dir ($base + '.x265.mkv')
+        $stam  = $base
+        $cand  = Join-Path $dir ($stam + '.mkv')
+        if ([string]::Equals($cand, $SourcePath, [StringComparison]::OrdinalIgnoreCase)) {
+            if ($ReplaceSource) { return $SourcePath }
+            $stam = $base + '.x265'
+            $cand = Join-Path $dir ($stam + '.mkv')
+        }
         $i = 2
         while (Test-Path -LiteralPath $cand) {
-            $cand = Join-Path $dir ('{0}.x265 ({1}).mkv' -f $base, $i)
+            $cand = Join-Path $dir ('{0} ({1}).mkv' -f $stam, $i)
             $i++
             if ($i -gt 500) { break }
         }
@@ -324,38 +337,70 @@ $ConvertWorker = {
     #  Vandaar deze controle: ligt er al een uitvoerbestand naast dat ook
     #  echt HEVC is, dan is het werk al gedaan.
     # -----------------------------------------------------------------
+    function Set-AlOmgezet {
+        param($Job, [string]$Gevonden)
+        $Job.Queued    = $false
+        $Job.QueueText = ''
+        $Job.Status    = 'Al omgezet'
+        if ([string]::Equals($Gevonden, [string]$Job.FullPath, [StringComparison]::OrdinalIgnoreCase)) {
+            $Job.ResultText = 'De bron is inmiddels zelf HEVC (al omgezet, mogelijk door een andere pc).'
+            W ("Overgeslagen, is inmiddels al HEVC: {0}" -f $Job.FullPath) 'WAARS'
+            return
+        }
+        $Job.ResultText = 'Er staat al een HEVC-uitvoer naast de bron: ' + [IO.Path]::GetFileName($Gevonden)
+        W ("Overgeslagen, er staat al een omgezet bestand naast de bron: {0}" -f $Gevonden) 'WAARS'
+        W 'Het origineel is blijkbaar niet opgeruimd na een eerdere omzetting. Verwijder het zelf, of hernoem de uitvoer als je het toch opnieuw wilt doen.' 'WAARS'
+    }
+
     function Test-AlOmgezet {
         param([string]$SourcePath, [string]$FixedOut = '')
 
-        $kandidaat = ''
+        # Waar kan een eerdere uitvoer staan? De huidige naam (<naam>.mkv),
+        # de naam van voor v1.10 (<naam>.x265.mkv), en - als er na de
+        # conversie wordt hernoemd - de naam volgens de naamregels.
+        $kandidaten = @()
         if (-not [string]::IsNullOrWhiteSpace($FixedOut)) {
-            $kandidaat = $FixedOut
+            $kandidaten = @($FixedOut)
         }
         else {
             try {
                 $dir  = [IO.Path]::GetDirectoryName($SourcePath)
                 $base = Get-CleanBase ([IO.Path]::GetFileNameWithoutExtension($SourcePath))
-                $kandidaat = Join-Path $dir ($base + '.x265.mkv')
+                $nieuw = Join-Path $dir ($base + '.mkv')
+                $kandidaten += $nieuw
+                $kandidaten += (Join-Path $dir ($base + '.x265.mkv'))
+                if ($st -ne $null -and $st.ContainsKey('RenameAfterConvert') -and [bool]$st.RenameAfterConvert) {
+                    $rn = $null
+                    try { $rn = Get-RnNewName $nieuw } catch { }
+                    if ($rn) { $kandidaten += (Join-Path $dir $rn) }
+                }
             }
             catch { return '' }
         }
 
-        if ([string]::IsNullOrWhiteSpace($kandidaat)) { return '' }
-        try { if (-not [System.IO.File]::Exists($kandidaat)) { return '' } } catch { return '' }
+        # Sinds v1.10 kan het resultaat de plaats van de bron innemen
+        # (zelfde naam). Heeft een andere pc dat al gedaan, dan is de bron
+        # zelf nu HEVC. Bij een vast uitvoerpad niet: dan gaat het om dat pad.
+        if ([string]::IsNullOrWhiteSpace($FixedOut)) { $kandidaten = @($SourcePath) + $kandidaten }
 
-        $lengte = 0
-        try { $lengte = (Get-Item -LiteralPath $kandidaat -ErrorAction Stop).Length } catch { return '' }
-        if ($lengte -le 0) { return '' }
+        foreach ($kandidaat in $kandidaten) {
+            if ([string]::IsNullOrWhiteSpace($kandidaat)) { continue }
+            try { if (-not [System.IO.File]::Exists($kandidaat)) { continue } } catch { continue }
 
-        # Bestaan is niet genoeg: een half afgebroken bestand van een
-        # eerdere poging mag de bron niet voor altijd blokkeren.
-        $codec = ''
-        try {
-            $codec = (& $sync.Ffprobe -v error -select_streams v:0 `
-                        -show_entries stream=codec_name -of default=nw=1:nk=1 $kandidaat 2>$null) -join ''
+            $lengte = 0
+            try { $lengte = (Get-Item -LiteralPath $kandidaat -ErrorAction Stop).Length } catch { continue }
+            if ($lengte -le 0) { continue }
+
+            # Bestaan is niet genoeg: een half afgebroken bestand van een
+            # eerdere poging mag de bron niet voor altijd blokkeren.
+            $codec = ''
+            try {
+                $codec = (& $sync.Ffprobe -v error -select_streams v:0 `
+                            -show_entries stream=codec_name -of default=nw=1:nk=1 $kandidaat 2>$null) -join ''
+            }
+            catch { continue }
+            if (([string]$codec).Trim() -match '(?i)^(hevc|h265|x265)$') { return $kandidaat }
         }
-        catch { return '' }
-        if (([string]$codec).Trim() -match '(?i)^(hevc|h265|x265)$') { return $kandidaat }
         return ''
     }
 
@@ -1564,12 +1609,7 @@ $ConvertWorker = {
             # ---- is dit bestand al omgezet? -------------------------
             $alKlaar = Test-AlOmgezet -SourcePath ([string]$job.FullPath) -FixedOut ([string]$job.OutPath)
             if ($alKlaar) {
-                $job.Status     = 'Al omgezet'
-                $job.ResultText = 'Er staat al een HEVC-uitvoer naast de bron: ' + [IO.Path]::GetFileName($alKlaar)
-                $job.Queued     = $false
-                $job.QueueText  = ''
-                W ("Overgeslagen, er staat al een omgezet bestand naast de bron: {0}" -f $alKlaar) 'WAARS'
-                W 'Het origineel is blijkbaar niet opgeruimd na een eerdere omzetting. Verwijder het zelf, of hernoem de uitvoer als je het toch opnieuw wilt doen.' 'WAARS'
+                Set-AlOmgezet $job $alKlaar
                 continue
             }
 
@@ -1584,6 +1624,20 @@ $ConvertWorker = {
                     # de poll-lussen van encoderen, remuxen, opvullen en
                     # kopieren, en die zitten in aparte functies.
                     $script:HuidigLock = $lock
+
+                    # Nog een keer kijken, nu met het lock in handen: een
+                    # andere pc kan klaar zijn gekomen tussen de controle
+                    # hierboven en het lock. Zonder deze tweede blik zou
+                    # die zijn (HEVC-)resultaat hier nog eens worden omgezet.
+                    $alKlaar = Test-AlOmgezet -SourcePath ([string]$job.FullPath) -FixedOut ([string]$job.OutPath)
+                    if ($alKlaar) {
+                        if ($pre -ne $null -and $pre.Job -eq $job) { Stop-Prefetch $pre; $pre = $null }
+                        Release-Lock $lock
+                        $lock = $null
+                        $script:HuidigLock = $null
+                        Set-AlOmgezet $job $alKlaar
+                        continue
+                    }
                 }
                 elseif ($poging.Busy) {
                     $sync.LockGezien = $true
@@ -2090,15 +2144,41 @@ $ConvertWorker = {
                     $newLen = [long]0
                     try { $newLen = (Get-Item -LiteralPath $temp).Length } catch { }
 
-                    $outPath = New-OutputPath -SourcePath $job.FullPath -Fixed ([string]$job.OutPath)
+                    $outPath = New-OutputPath -SourcePath $job.FullPath -Fixed ([string]$job.OutPath) `
+                                              -ReplaceSource ([bool]$st.DeleteOriginal)
+
+                    # Komt het resultaat op precies de naam van de bron, dan
+                    # gaat de bron eerst opzij onder een naam die geen video
+                    # is. Mislukt het verplaatsen, dan gaat hij terug.
+                    $vervangt = [string]::Equals($outPath, [string]$job.FullPath, [StringComparison]::OrdinalIgnoreCase)
+                    $opzij    = ''
+                    $opzijOk  = $true
+                    if ($vervangt) {
+                        $opzij = [string]$job.FullPath + '.x265oud'
+                        try {
+                            if (Test-Path -LiteralPath $opzij) { Remove-Item -LiteralPath $opzij -Force -ErrorAction Stop }
+                            Move-Item -LiteralPath $job.FullPath -Destination $opzij -ErrorAction Stop
+                        }
+                        catch {
+                            $opzijOk = $false
+                            $sync.LastMoveError = 'origineel kon niet opzij worden gezet: ' + $_.Exception.Message
+                        }
+                    }
 
                     $sync.CurPhase    = 'Verplaatsen'
                     $sync.CurPhasePct = 0
                     $job.Status       = 'Verplaatsen'
                     W ("Verplaatsen naar bronmap: {0}  ({1})" -f $outPath, (Format-Size $newLen))
 
-                    $sync.LastMoveError = ''
-                    $moved = Move-WithProgress $temp $outPath
+                    $moved = $false
+                    if ($opzijOk) {
+                        $sync.LastMoveError = ''
+                        $moved = Move-WithProgress $temp $outPath
+                        if (-not $moved -and $vervangt) {
+                            try { Move-Item -LiteralPath $opzij -Destination $job.FullPath -ErrorAction Stop }
+                            catch { W ("Het origineel staat nog als {0}; zet het zelf terug." -f $opzij) 'FOUT' }
+                        }
+                    }
 
                     if (-not $moved) {
                         Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
@@ -2130,7 +2210,8 @@ $ConvertWorker = {
                             $sync.CurPhase    = 'Origineel verwijderen'
                             $sync.CurPhasePct = 100
                             $job.Status       = 'Origineel wissen'
-                            $delOk = Remove-WithRetry $job.FullPath $st.DeleteAttempts $st.DeleteWait
+                            if ($vervangt) { $delOk = Remove-WithRetry $opzij $st.DeleteAttempts $st.DeleteWait }
+                            else           { $delOk = Remove-WithRetry $job.FullPath $st.DeleteAttempts $st.DeleteWait }
                         }
 
                         # ---- ondertitels meenemen ----------------------
@@ -2145,6 +2226,22 @@ $ConvertWorker = {
                             if ($subRes.Done -gt 0 -or $subRes.Skipped -gt 0) {
                                 W ("Ondertitels: {0} verwerkt, {1} overgeslagen." -f $subRes.Done, $subRes.Skipped)
                             }
+                        }
+
+                        # ---- hernoemen volgens de naamregels -----------
+                        #  Pas NA de conversie: het lock hoort bij de naam
+                        #  van de bron, en die blijft tot hier ongemoeid.
+                        #  Niet bij een vast uitvoerpad (-Out): wie het pad
+                        #  zelf opgeeft krijgt precies dat pad.
+                        $hernoemd = ''
+                        if ($st.ContainsKey('RenameAfterConvert') -and [bool]$st.RenameAfterConvert -and
+                            [string]::IsNullOrWhiteSpace([string]$job.OutPath)) {
+                            $sync.CurPhase = 'Hernoemen'
+                            try {
+                                $na = Invoke-RnSingle -VideoPath $outPath -UndoFile ([string]$st.RenameUndoFile)
+                                if ($na -and $na -ne $outPath) { $hernoemd = [IO.Path]::GetFileName($na); $outPath = $na }
+                            }
+                            catch { W ("Hernoemen overgeslagen wegens fout: {0}" -f $_.Exception.Message) 'WAARS' }
                         }
 
                         $saved = $job.SizeBytes - $newLen
@@ -2162,6 +2259,7 @@ $ConvertWorker = {
                             $job.ResultText = ('{0} kleiner ({1:N1} %)' -f (Format-Size $saved), $pct)
                             if ($lossTxt) { $job.ResultText = $job.ResultText + '  -  ' + $lossTxt }
                             elseif ($padded) { $job.ResultText = $job.ResultText + '  -  staart opgevuld' }
+                            if ($hernoemd) { $job.ResultText = $job.ResultText + '  -  ' + $hernoemd }
                             $sync.Success   = $sync.Success + 1
                             $jobOk          = $true
                             Add-Totals -OrigBytes ([long]$job.SizeBytes) -NewBytes $newLen `
@@ -2172,6 +2270,7 @@ $ConvertWorker = {
                         else {
                             $job.Status     = 'Let op'
                             $job.ResultText = 'x265 aangemaakt, origineel NIET verwijderd'
+                            if ($vervangt) { $job.ResultText = 'x265 aangemaakt, origineel staat nog als ' + [IO.Path]::GetFileName($opzij) }
                             $sync.Warned    = $sync.Warned + 1
                             $jobReason      = 'origineel kon niet worden verwijderd'
                             W 'LET OP: het x265-bestand staat er, maar het origineel kon niet worden verwijderd. Beide bestanden bestaan nu.' 'WAARS'

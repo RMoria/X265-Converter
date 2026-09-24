@@ -197,7 +197,18 @@ function Invoke-Tick {
     if ($removed -gt 0 -or $released -gt 0) { Sync-QueueOrder }
 
     # ---------- scanvoortgang ---------------------------------------
-    if ($scanBusy) {
+    if ($scanBusy -and ([string]$sync.ScanMode) -like 'hernoem*') {
+        # Hernoemen heeft geen tellers zoals de scan; alleen de stand.
+        $ui.txtScanState.Text = [string]$sync.ScanStatus
+        if (-not $convBusy) {
+            $ui.txtOverallLabel.Text = 'Hernoemen'
+            $ui.pbOverall.IsIndeterminate = $true
+            $ui.txtOverallInfo.Text = ''
+            $ui.txtCurrentFile.Text = [string]$sync.ScanStatus
+            Set-Status ([string]$sync.ScanStatus)
+        }
+    }
+    elseif ($scanBusy) {
         $wat = switch ($sync.ScanMode) {
             'verify'   { 'Controleren' }
             'opdracht' { 'Opdrachten nakijken' }
@@ -463,6 +474,8 @@ function Invoke-Tick {
 
         $wasVerify   = ($sync.ScanMode -eq 'verify')
         $wasOpdracht = ($sync.ScanMode -eq 'opdracht')
+        $hernoemFase = ''
+        if (([string]$sync.ScanMode) -like 'hernoem*') { $hernoemFase = [string]$sync.ScanMode }
 
         $sync.ScanBusy = $false
         $scanBusy      = $false
@@ -490,6 +503,15 @@ function Invoke-Tick {
                 [System.Windows.MessageBox]::Show($m, 'Bewaarde lijst', 'OK', 'Information') | Out-Null
             }
             Set-Title 'Batch Converter'
+        }
+        elseif ($hernoemFase) {
+            $sync.ScanMode = 'scan'
+            $ui.pbOverall.IsIndeterminate = $false
+            $ui.pbOverall.Value     = 0
+            $ui.txtOverallInfo.Text = ''
+            $ui.txtOverallLabel.Text = 'Totale voortgang'
+            if (-not $convBusy) { $ui.txtCurrentFile.Text = 'Geen actieve conversie' }
+            Complete-Hernoemen $hernoemFase
         }
         elseif ($wasOpdracht) {
             # Opdrachten van de opdrachtregel: geen schermvullende melding en

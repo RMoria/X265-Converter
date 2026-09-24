@@ -3,7 +3,7 @@
 Video naar H.265 / HEVC omzetten op Windows, met een grafische interface.
 Eén PowerShell-script plus een starter; verder alleen ffmpeg.
 
-**Versie 1.9** — [wat er per versie is veranderd](LEESMIJ-X265-Converter.md#wat-er-per-versie-is-veranderd)
+**Versie 1.10** — [wat er per versie is veranderd](LEESMIJ-X265-Converter.md#wat-er-per-versie-is-veranderd)
 
 ![PowerShell 5.1](https://img.shields.io/badge/PowerShell-5.1-blue)
 ![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-blue)
@@ -34,8 +34,13 @@ is gaan zitten:
   omslagafbeelding hoeft niet door de encoder.
 - **Het kan vanzelf doorgaan.** Zijn er locks van een andere pc gezien, dan
   wordt er aan het eind van de ronde nog één keer gekeken of er iets is blijven
-  liggen. En met een vinkje aan kijkt het elk uur of er nieuwe bestanden in de
-  bronmappen staan, en zet die zonder tussenkomst om.
+  liggen. En met een vinkje aan kijkt het om de zoveel uur of er nieuwe
+  bestanden in de bronmappen staan, en zet die zonder tussenkomst om.
+- **Eenduidige namen.** Met een vinkje krijgt elk omgezet bestand (en zijn
+  ondertitels) een nette naam als `Serienaam.S01E05.Titel.mkv`; een knop doet
+  hetzelfde voor alles wat al in de bronmappen staat, met dubbelen naar de
+  Prullenbak en een undo-bestand. De regels zijn per installatie aan te passen
+  in het instellingenbestand.
 - **Het programma werkt zichzelf bij** — `X265-Converter.ps1 -Bijwerken` vanaf de laatste release-tag: via git
   als dat er is, anders gewoon met een download. Voordat er iets wordt
   vervangen wordt gecontroleerd of het opgehaalde script als geldig PowerShell

@@ -38,7 +38,8 @@ param(
     # Het volledige pad van het resultaat. Dit wordt LETTERLIJK gebruikt:
     # er wordt geen '.x265' achter geplakt en er komt geen '(2)' bij als
     # het al bestaat. Wie het pad zelf opgeeft, krijgt precies dat pad.
-    # Weggelaten? Dan gaat het resultaat als <naam>.x265.mkv naast de bron.
+    # Weggelaten? Dan gaat het resultaat als <naam>.mkv naast de bron (zie
+    # New-OutputPath voor wat er gebeurt als dat precies de bron is).
     #
     # Draait er al een instantie, dan wordt de opdracht daaraan doorgegeven
     # (achteraan de wachtrij) en sluit deze aanroep zichzelf meteen af.
@@ -59,7 +60,13 @@ param(
     [switch]$Stil,
 
     # Bij -Bijwerken: git overslaan en meteen rechtstreeks downloaden.
-    [switch]$GeenGit
+    [switch]$GeenGit,
+
+    # Een hernoemronde terugdraaien: het undo-bestand (CSV met OldPath en
+    # NewPath) dat bij het hernoemen is weggeschreven. Zonder -Uitvoeren
+    # wordt alleen getoond wat er zou gebeuren.
+    [string]$HernoemTerug,
+    [switch]$Uitvoeren
 )
 
 # ---------------------------------------------------------------------
@@ -74,8 +81,8 @@ param(
 #  LEESMIJ-X265-Converter.md.
 # ---------------------------------------------------------------------
 $AppName    = 'X265 Converter'
-$AppVersion = '1.9'
-$AppDate    = '2026-09-23'
+$AppVersion = '1.10'
+$AppDate    = '2026-09-24'
 $AppTitle   = 'Video naar H.265 / HEVC'
 $AppStamp   = ('{0} {1} ({2})' -f $AppName, $AppVersion, $AppDate)
 
@@ -606,6 +613,40 @@ if ($Bijwerken) {
 # ==== BIJWERKEN EIND ====
 
 # ---------------------------------------------------------------------
+# 0.  Hernoemen terugdraaien (-HernoemTerug <undo.csv> [-Uitvoeren])
+#
+#     Achterstevoren, zodat een reeks hernoemingen netjes terugloopt.
+#     Verwijderde dubbelen komen hiermee niet terug; die staan in de
+#     Prullenbak (op een netwerkschijf: weg).
+# ---------------------------------------------------------------------
+if ($HernoemTerug) {
+    if (-not (Test-Path -LiteralPath $HernoemTerug)) { Write-Host "Undo-bestand niet gevonden: $HernoemTerug"; return }
+    $rijen = @(Import-Csv -LiteralPath $HernoemTerug)
+    [array]::Reverse($rijen)
+    $n = 0
+    foreach ($r in $rijen) {
+        $oudNaam = [IO.Path]::GetFileName([string]$r.OldPath)
+        if (-not (Test-Path -LiteralPath $r.NewPath)) { Write-Warning "Niet gevonden: $($r.NewPath)"; continue }
+        if (-not $Uitvoeren) { Write-Host "[voorbeeld] terug: $($r.NewPath) -> $oudNaam"; $n++; continue }
+        try {
+            if (([string]$r.OldPath).ToLower() -eq ([string]$r.NewPath).ToLower()) {
+                $tmp = $oudNaam + '.tmp_rename'
+                Rename-Item -LiteralPath $r.NewPath -NewName $tmp -ErrorAction Stop
+                Rename-Item -LiteralPath (Join-Path ([IO.Path]::GetDirectoryName([string]$r.NewPath)) $tmp) -NewName $oudNaam -ErrorAction Stop
+            }
+            elseif (Test-Path -LiteralPath $r.OldPath) { Write-Warning "Staat al: $($r.OldPath) - overgeslagen"; continue }
+            else { Rename-Item -LiteralPath $r.NewPath -NewName $oudNaam -ErrorAction Stop }
+            Write-Host "terug: $($r.NewPath) -> $oudNaam"
+            $n++
+        }
+        catch { Write-Warning "Mislukt: $($r.NewPath): $($_.Exception.Message)" }
+    }
+    if ($Uitvoeren) { Write-Host "$n bestand(en) teruggezet." }
+    else { Write-Host "`n$n bestand(en) zouden worden teruggezet. Voeg -Uitvoeren toe om het echt te doen." -ForegroundColor Yellow }
+    return
+}
+
+# ---------------------------------------------------------------------
 # 0a. Opnieuw starten zonder consolevenster
 #
 #     Dit is de oplossing voor het venster dat bleef staan. Eerder werd
@@ -1094,7 +1135,7 @@ namespace X265
         public string RawCodec   { get; set; }
 
         // Vast uitvoerpad, meegegeven met -Out op de opdrachtregel. Leeg
-        // betekent: zelf een naam afleiden (<naam>.x265.mkv).
+        // betekent: zelf een naam afleiden (<naam>.mkv).
         public string OutPath    { get; set; }
     }
 }
