@@ -3,7 +3,7 @@
 Video naar H.265 / HEVC omzetten op Windows, met een grafische interface.
 Eén PowerShell-script plus een starter; verder alleen ffmpeg.
 
-**Versie 1.10** — [wat er per versie is veranderd](LEESMIJ-X265-Converter.md#wat-er-per-versie-is-veranderd)
+**Versie 1.11** — [wat er per versie is veranderd](LEESMIJ-X265-Converter.md#wat-er-per-versie-is-veranderd)
 
 ![PowerShell 5.1](https://img.shields.io/badge/PowerShell-5.1-blue)
 ![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-blue)
@@ -44,7 +44,8 @@ is gaan zitten:
 - **Het programma werkt zichzelf bij** — `X265-Converter.ps1 -Bijwerken` vanaf de laatste release-tag: via git
   als dat er is, anders gewoon met een download. Voordat er iets wordt
   vervangen wordt gecontroleerd of het opgehaalde script als geldig PowerShell
-  parseert, en de vorige versie blijft ernaast staan.
+  parseert; mislukt het vervangen halverwege, dan gaat de vorige versie terug.
+  Er blijft geen map met een oude versie achter.
 - **Twee computers kunnen op dezelfde map werken.** Voor elk bestand komt er
   een lock-bestandje naast te staan, aangemaakt met "alleen als het nog niet
   bestaat" — één handeling aan de serverkant, dus zonder gat waarin de tweede

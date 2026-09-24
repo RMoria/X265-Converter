@@ -18,7 +18,16 @@ $gevallen = [ordered]@{
     'F:\serie\Supernatural.S01\Supernatural.S01E01.Pilot.720p.HDTV.mkv'                   = 'Supernatural.S01E01.Pilot.mkv'
     'G:\anime\Dungeon Meshi\[CameEsp] Dungeon Meshi - 01 [1080p][A1B2C3D4].mkv'           = 'DungeonMeshi.01.mkv'
     'G:\anime\Hell Mode\Hell Mode S2 - 12v2 (1080p).mkv'                                  = 'HellMode.S02E12.mkv'
-    'F:\serie\Futurama\Futurama 1407 Welcome to the Playground.avi'                       = 'Futurama.S14E07.Welcome.to.the.Playground.avi'
+    'F:\serie\Futurama\Futurama 1407 Welcome to the Playground.avi'                       = 'Futurama.1407.Welcome.to.the.Playground.avi'
+    'F:\serie\Anime\BokuNoHeroAcademia.171.mkv'                                          = 'BokuNoHeroAcademia.171.mkv'
+    'F:\serie\Anime\Boku no Hero Academia 171 [1080p].mkv'                               = 'BokuNoHeroAcademia.171.mkv'
+    'F:\serie\Friends\Friends 1x09 The One Where.avi'                                    = 'Friends.S01E09.The.One.Where.avi'
+    'F:\serie\Friends\friends.10x17.mkv'                                                 = 'Friends.S10E17.mkv'
+    'F:\serie\Show\Show.2019.05.Titel.mkv'                                               = 'Show.05.Titel.mkv'
+    'F:\films\TheAvengers.VCP.mkv'                                                        = 'TheAvengers.VCP.mkv'
+    'F:\films\The.Avengers.2012.1080p.VCP.mkv'                                            = 'TheAvengers.VCP.mkv'
+    'F:\serie\Show\show.s01e02.720p.VCP.mkv'                                             = 'Show.S01E02.VCP.mkv'
+    'F:\serie\Show\x264 1x09 niet.mkv'                                                   = $null
     'F:\serie\Death Note\Death.Note.01.Rebirth.mkv'                                       = 'DeathNote.01.Rebirth.mkv'
     'F:\film\Sharknado_2_The_Second_One.mp4'                                              = 'Sharknado.2.The.Second.One.mp4'
     'F:\film\The.Fantastic.Four.First.Steps.2025.2160p.WEB.mkv'                           = 'TheFantasticFourFirstSteps.mkv'
@@ -33,9 +42,13 @@ $gevallen = [ordered]@{
     'F:\serie\Fallout\Fallout.2024.S01E03.The.Head.1080p.mkv'                             = 'Fallout.S01E03.The.Head.mkv'
 }
 foreach ($k in $gevallen.Keys) {
+    if ($gevallen[$k] -eq $null) { continue }
     $n = Get-RnNewName $k
     Check ("{0}" -f $gevallen[$k]) ($n -ceq $gevallen[$k]) "($n)"
 }
+# x264 is geen 1x09: geen S..E.. uit een codecnaam
+Check 'x264 is geen seizoen'        ((Get-RnNewName 'F:\serie\Show\Show.S01E03.x264.mkv') -ceq 'Show.S01E03.mkv')
+Check 'VCP-kenmerk uit de instellingen' ((& { $sync.RenameRules = New-RnRules $null 'KAPOT'; $x = Get-RnNewName 'F:\films\the.avengers.KAPOT.mkv'; $sync.RenameRules = New-RnRules $null; $x }) -ceq 'TheAvengers.KAPOT.mkv')
 # In een filmmap geen afleveringsnummers: "Naam 1407" blijft een film
 Check 'filmmap: geen SSEE'         ((Get-RnNewName 'F:\films\Blade Runner 2049.mkv') -ceq 'BladeRunner.mkv') "($(Get-RnNewName 'F:\films\Blade Runner 2049.mkv'))"
 ''
@@ -231,5 +244,7 @@ Check 'regels gebouwd bij opstarten' ($p6 -match '\$sync\.RenameRules = New-RnRu
 Check 'niet tijdens een conversie'  ($p7 -match '\$ui\.btnRename\.IsEnabled = \(-not \$scanBusy\) -and \(-not \$convBusy\)')
 Check 'start geblokkeerd tijdens hernoemen' ($p7 -match '(?s)btnStart\.Add_Click.{0,300}hernoem\*')
 Check 'eerst bevestigen'            ($p7 -match "(?s)function Complete-Hernoemen.{0,4000}'YesNo'")
+Check 'voorbeeld-CSV na de vraag weg' ($p7 -match "(?s)'YesNo', 'Question'\)\s*\r?\n\s*Remove-HernoemVoorbeeld")
+Check 'oude CSVs bij het opstarten weg' ($p6 -match "hernoem_undo_\*' -and \`$f\.LastWriteTime -lt \(Get-Date\)\.AddDays\(-30\)")
 ''
 "====> $ok goed, $bad fout"

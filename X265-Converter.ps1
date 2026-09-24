@@ -81,7 +81,7 @@ param(
 #  LEESMIJ-X265-Converter.md.
 # ---------------------------------------------------------------------
 $AppName    = 'X265 Converter'
-$AppVersion = '1.10'
+$AppVersion = '1.11'
 $AppDate    = '2026-09-24'
 $AppTitle   = 'Video naar H.265 / HEVC'
 $AppStamp   = ('{0} {1} ({2})' -f $AppName, $AppVersion, $AppDate)
@@ -440,7 +440,11 @@ function Test-Binnengekomen {
 function Plaats-Nieuw {
     param([string]$Tijdelijk, [string]$Doel, [version]$Versie)
 
-    $backup = Join-Path $Doel ('vorige-versie')
+    # De vorige versie gaat alleen TIJDELIJK opzij, in de ophaalmap (die
+    # na afloop hoe dan ook wordt opgeruimd): nodig om terug te rollen als
+    # het vervangen halverwege mislukt, daarna niet meer. Er blijft dus geen
+    # map met een oude versie naast het programma staan.
+    $backup = Join-Path $Tijdelijk '_vorige-versie'
     try { New-Item -ItemType Directory -Path $backup -Force -ErrorAction Stop | Out-Null }
     catch { return "kon geen map voor de vorige versie maken: $($_.Exception.Message)" }
 
@@ -487,6 +491,14 @@ function Plaats-Nieuw {
                 Schrijf 'De starter is vernieuwd; die wordt bij de volgende start omgewisseld.' 'Yellow'
             } catch { }
         }
+    }
+
+    # Een 'vorige-versie'-map van voor v1.11 (toen de oude versie ernaast
+    # bleef staan) mag nu weg.
+    $oud = Join-Path $Doel 'vorige-versie'
+    if (Test-Path -LiteralPath $oud) {
+        try { Remove-Item -LiteralPath $oud -Recurse -Force -ErrorAction Stop; Schrijf 'Oude map vorige-versie opgeruimd.' 'DarkGray' }
+        catch { Schrijf ("Oude map vorige-versie kon niet weg: {0}" -f $_.Exception.Message) 'DarkGray' }
     }
 
     Schrijf ("Bijgewerkt naar versie {0}: {1}" -f $Versie, ($gezet -join ', ')) 'Green'
@@ -1976,10 +1988,12 @@ function Write-Log {
                        ToolTip="Aantal uur zonder werk voordat de bronmappen opnieuw worden doorzocht (1-168)."/>
               <TextBlock Text="uur" VerticalAlignment="Center"/>
             </StackPanel>
-            <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
-              <CheckBox x:Name="chkRenameAfter" Content="Na conversie hernoemen volgens de naamregels" IsChecked="False" VerticalAlignment="Center"
-                        ToolTip="Het omgezette bestand en zijn ondertitels krijgen na de conversie een eenduidige naam, bijvoorbeeld Serienaam.S01E05.Titel.mkv. De regels staan onder RenameRules in het instellingenbestand."/>
-              <Button x:Name="btnRename" Content="Bronmappen hernoemen…" Margin="10,0,0,0" Padding="8,2"
+            <!-- Kort gehouden: de kolom is 430 breed, en vinkje plus knop moeten
+                 op een regel passen. De uitleg staat in de tooltip. -->
+            <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+              <CheckBox x:Name="chkRenameAfter" Content="Na conversie hernoemen" IsChecked="False" VerticalAlignment="Center"
+                        ToolTip="Het omgezette bestand en zijn ondertitels krijgen na de conversie een eenduidige naam volgens de naamregels, bijvoorbeeld Serienaam.S01E05.Titel.mkv. De regels staan onder RenameRules in het instellingenbestand."/>
+              <Button x:Name="btnRename" Content="Bronmappen hernoemen…" Margin="12,0,0,0" Padding="8,1" VerticalAlignment="Center"
                       ToolTip="Alle video's en ondertitels in de gekozen bronmappen volgens de naamregels hernoemen. Je krijgt eerst een overzicht te zien; dubbelen gaan naar de Prullenbak. Er komt een undo-bestand bij."/>
             </StackPanel>
           </StackPanel>
@@ -2552,7 +2566,7 @@ function Test-LockFree {
 # ---------------------------------------------------------------------
 
 function New-RnRules {
-    param($Delta)
+    param($Delta, [string]$VcpMarker = 'VCP')
 
     $lijsten = [ordered]@{
         VideoExtensions   = @('.mkv', '.mp4', '.avi', '.m4v')
@@ -2633,6 +2647,9 @@ function New-RnRules {
     $uit.FilmDirRegex      = '(?i)[\\/](?:' + (Samen $uit.FilmDirs) + ')[\\/]'
     $uit.LangRegex         = '(?i)((?:[._ ](?:' + (Samen $uit.LangTags) + '))+)$'
     $uit.YearRegex         = '^(19|20)\d{2}$'
+    # Het VCP-kenmerk zet het programma zelf (<naam>.VCP.mkv); dat moet
+    # bij het hernoemen blijven staan.
+    $uit.VcpMarker         = $(if ([string]::IsNullOrWhiteSpace($VcpMarker)) { 'VCP' } else { $VcpMarker.Trim() })
     $uit.Warnings          = [string[]]@($waarsch)
     return $uit
 }
@@ -2811,9 +2828,20 @@ function Join-RnParts($show, $ep, $title, $ext, $dirHint) {
 # naam niet te herkennen is.
 function Get-RnNewName([string]$fullPath) {
     $R = Get-RnRules
-    $fileName = (Split-RnPath $fullPath)[1]
+    $parts0   = Split-RnPath $fullPath
+    $fileName = $parts0[1]
     $ext      = [IO.Path]::GetExtension($fileName).ToLower()
     $base     = [IO.Path]::GetFileNameWithoutExtension($fileName)
+
+    # <naam>.VCP.mkv: de rest opschonen en het kenmerk er weer achter zetten
+    $vcp = '.' + [string]$R.VcpMarker
+    if ($R.VcpMarker -and $base.Length -gt $vcp.Length -and $base.EndsWith($vcp, [StringComparison]::OrdinalIgnoreCase)) {
+        $zonder = $base.Substring(0, $base.Length - $vcp.Length)
+        $sep = $parts0[2]; if (-not $sep) { $sep = '\' }
+        $n = Get-RnNewName ($parts0[0] + $sep + $zonder + $ext)
+        if (-not $n) { return $null }
+        return [IO.Path]::GetFileNameWithoutExtension($n) + $vcp + $ext
+    }
     $dirHint  = Get-RnShowDirHint $fullPath
     $isFilm   = $fullPath -match $R.FilmDirRegex
 
@@ -2831,6 +2859,15 @@ function Get-RnNewName([string]$fullPath) {
         return (Join-RnParts $show $ep $title $ext $dirHint)
     }
 
+    # 1b) 1x09 (ook 01x09): seizoen x aflevering
+    $m = [regex]::Match($work, '(?i)(?<![A-Za-z0-9])(\d{1,2})x(\d{2,3})(?![0-9])')
+    if ($m.Success) {
+        $ep    = 'S{0:D2}E{1}' -f [int]$m.Groups[1].Value, (Format-RnEp $m.Groups[2].Value)
+        $show  = Get-RnShowName $work.Substring(0, $m.Index) $dirHint ([ref]$null)
+        $title = Format-RnTitle (Remove-RnBrackets $work.Substring($m.Index + $m.Length))
+        return (Join-RnParts $show $ep $title $ext $dirHint)
+    }
+
     # 2) Anime: "Naam - 12", "Naam S2 - 12v2", "One Piece - 0001"
     $clean = Remove-RnBrackets $work
     $m = [regex]::Match($clean, '^(?<show>.+)[\s._]-\s*(?<ep>\d{1,4})(?:v\d+)?(?=[\s._]|$)')
@@ -2842,17 +2879,11 @@ function Get-RnNewName([string]$fullPath) {
         return (Join-RnParts $show $ep '' $ext $dirHint)
     }
 
-    # 3) "Futurama 1407 Titel" -> S14E07  (geen jaartal)
-    $m = [regex]::Match($clean, '^(?<show>.+?)[\s._](?<s>\d{1,2})[^\d\s]?(?<e>\d{2})(?:[\s._](?<rest>.*))?$')
-    if ($m.Success -and -not $isFilm -and ($m.Groups['s'].Value + $m.Groups['e'].Value) -notmatch $R.YearRegex) {
-        $show  = Get-RnShowName $m.Groups['show'].Value $dirHint ([ref]$null)
-        $ep    = 'S{0:D2}E{1}' -f [int]$m.Groups['s'].Value, $m.Groups['e'].Value
-        $title = Format-RnTitle $m.Groups['rest'].Value
-        return (Join-RnParts $show $ep $title $ext $dirHint)
-    }
-
-    # 4) "Death.Note.01.Rebirth" -> DeathNote.01.Rebirth
-    $m = [regex]::Match($clean, '^(?<show>.+?)[\s._](?<ep>\d{2,3})(?:[\s._](?<rest>.*))?$')
+    # 3) Alleen een nummer: "Death.Note.01.Rebirth" -> DeathNote.01.Rebirth,
+    #    "Boku no Hero Academia 171" -> BokuNoHeroAcademia.171. Het nummer
+    #    blijft een nummer: zonder SxxExx of 1x09 wordt er geen seizoen
+    #    verzonnen. Een jaartal telt niet als nummer.
+    $m = [regex]::Match($clean, '^(?<show>.+?)[\s._](?<ep>(?!(?:19|20)\d{2}(?:[\s._]|$))\d{2,4})(?:[\s._](?<rest>.*))?$')
     if ($m.Success -and -not $isFilm) {
         $show  = Get-RnShowName $m.Groups['show'].Value $dirHint ([ref]$null)
         $ep    = Format-RnEp $m.Groups['ep'].Value
@@ -2860,7 +2891,7 @@ function Get-RnNewName([string]$fullPath) {
         return (Join-RnParts $show $ep $title $ext $dirHint)
     }
 
-    # 5) Film: Naam  of  Naam.Nummer.Titel  (jaartal verdwijnt)
+    # 4) Film: Naam  of  Naam.Nummer.Titel  (jaartal verdwijnt)
     $tokens = Get-RnStopAtJunk (Get-RnNameTokens $clean)
     for ($i = $tokens.Count - 1; $i -ge 1; $i--) {
         if ($tokens[$i] -match $R.YearRegex) { $tokens = @($tokens[0..($i - 1)]); break }
@@ -6703,12 +6734,22 @@ if ($saved -ne $null) {
 # De naamregels: standaard plus de delta uit het instellingenbestand.
 # Staat er iets onbruikbaars in de delta, dan wordt dat genegeerd en
 # gemeld; het programma start gewoon.
-try { $sync.RenameRules = New-RnRules $script:RenameRulesDelta }
+try { $sync.RenameRules = New-RnRules $script:RenameRulesDelta ([string]$script:VcpMarker) }
 catch {
     Write-Log ("RenameRules in het instellingenbestand onbruikbaar ({0}); de standaardregels worden gebruikt." -f $_.Exception.Message) 'WAARS'
-    $sync.RenameRules = New-RnRules $null
+    $sync.RenameRules = New-RnRules $null ([string]$script:VcpMarker)
 }
 foreach ($w in @($sync.RenameRules.Warnings)) { Write-Log ('Naamregels: ' + $w) 'WAARS' }
+
+# Opruimen van de hernoem-CSV's: een achtergebleven voorbeeld (programma
+# tijdens de vraag afgesloten) altijd, undo-bestanden na 30 dagen.
+try {
+    foreach ($f in @(Get-ChildItem -LiteralPath $DataDir -File -Filter 'hernoem_*.csv' -ErrorAction SilentlyContinue)) {
+        $weg = ($f.Name -like 'hernoem_voorbeeld_*') -or
+               ($f.Name -like 'hernoem_undo_*' -and $f.LastWriteTime -lt (Get-Date).AddDays(-30))
+        if ($weg) { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue }
+    }
+} catch { }
 
 # ---------------------------------------------------------------------
 # 11b. Bewaarde wachtrij terugzetten
@@ -7847,17 +7888,27 @@ $ui.btnRename.Add_Click({
     Update-Buttons
 })
 
+function Remove-HernoemVoorbeeld {
+    # Het voorbeeld-CSV is alleen voor tijdens de vraag; daarna weg. Het
+    # undo-bestand blijft: dat is nodig om terug te kunnen draaien.
+    try {
+        $v = [string]$sync.ScanSettings.PreviewFile
+        if ($v -and (Test-Path -LiteralPath $v)) { Remove-Item -LiteralPath $v -Force -ErrorAction Stop }
+    } catch { }
+}
+
 function Complete-Hernoemen {
     param([string]$Fase)
 
     if ($sync.RenameError) {
+        Remove-HernoemVoorbeeld
         [System.Windows.MessageBox]::Show("Hernoemen is afgebroken:`n`n$($sync.RenameError)", 'Hernoemen', 'OK', 'Error') | Out-Null
         return
     }
 
     if ($Fase -eq 'hernoem-plan') {
         $plan = @($sync.RenamePlan)
-        if ($sync.RenamePlan -eq $null) { Write-Log 'Hernoemen gestopt; er is niets veranderd.'; Set-Status 'Hernoemen gestopt.'; return }
+        if ($sync.RenamePlan -eq $null) { Remove-HernoemVoorbeeld; Write-Log 'Hernoemen gestopt; er is niets veranderd.'; Set-Status 'Hernoemen gestopt.'; return }
 
         $tel = @{}
         foreach ($r in $plan) { $k = ([string]$r.Status -split ' ')[0]; $tel[$k] = 1 + [int]$tel[$k] }
@@ -7875,9 +7926,8 @@ function Complete-Hernoemen {
         foreach ($r in @($plan | Where-Object { $_.Status -like 'CONFLICT*' })) {
             Write-Log ("  conflict: {0} -> {1}  ({2})" -f $r.OldPath, $r.Nieuw, $r.KeptAs) 'WAARS'
         }
-        Write-Log ("Volledig overzicht: {0}" -f $sync.ScanSettings.PreviewFile)
-
         if ($nRen + $nDel -eq 0) {
+            Remove-HernoemVoorbeeld
             Set-Status 'Hernoemen: alles staat al goed.'
             [System.Windows.MessageBox]::Show(("Er valt niets te hernoemen.`n`n{0} al goed, {1} conflict, {2} overgeslagen." -f $nGoed, $nConf, $nOver),
                 'Hernoemen', 'OK', 'Information') | Out-Null
@@ -7888,8 +7938,9 @@ function Complete-Hernoemen {
              ("  {0} bestand(en) hernoemen`n" -f $nRen) +
              ("  {0} dubbel(en) naar de Prullenbak (op een netwerkschijf zijn ze dan echt weg)`n" -f $nDel) +
              ("  {0} conflict(en) en {1} overgeslagen - die blijven zoals ze zijn`n`n" -f $nConf, $nOver) +
-             "Het volledige overzicht staat in:`n$($sync.ScanSettings.PreviewFile)`n`nNu uitvoeren?"
+             "Het volledige overzicht staat zolang deze vraag openstaat in:`n$($sync.ScanSettings.PreviewFile)`n(daarna wordt het opgeruimd)`n`nNu uitvoeren?"
         $a = [System.Windows.MessageBox]::Show($m, 'Bronmappen hernoemen', 'YesNo', 'Question')
+        Remove-HernoemVoorbeeld
         if ($a -ne 'Yes') {
             Write-Log 'Hernoemen niet uitgevoerd; er is niets veranderd.'
             Set-Status 'Hernoemen niet uitgevoerd.'

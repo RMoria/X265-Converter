@@ -352,10 +352,12 @@
                        ToolTip="Aantal uur zonder werk voordat de bronmappen opnieuw worden doorzocht (1-168)."/>
               <TextBlock Text="uur" VerticalAlignment="Center"/>
             </StackPanel>
-            <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
-              <CheckBox x:Name="chkRenameAfter" Content="Na conversie hernoemen volgens de naamregels" IsChecked="False" VerticalAlignment="Center"
-                        ToolTip="Het omgezette bestand en zijn ondertitels krijgen na de conversie een eenduidige naam, bijvoorbeeld Serienaam.S01E05.Titel.mkv. De regels staan onder RenameRules in het instellingenbestand."/>
-              <Button x:Name="btnRename" Content="Bronmappen hernoemen…" Margin="10,0,0,0" Padding="8,2"
+            <!-- Kort gehouden: de kolom is 430 breed, en vinkje plus knop moeten
+                 op een regel passen. De uitleg staat in de tooltip. -->
+            <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+              <CheckBox x:Name="chkRenameAfter" Content="Na conversie hernoemen" IsChecked="False" VerticalAlignment="Center"
+                        ToolTip="Het omgezette bestand en zijn ondertitels krijgen na de conversie een eenduidige naam volgens de naamregels, bijvoorbeeld Serienaam.S01E05.Titel.mkv. De regels staan onder RenameRules in het instellingenbestand."/>
+              <Button x:Name="btnRename" Content="Bronmappen hernoemen…" Margin="12,0,0,0" Padding="8,1" VerticalAlignment="Center"
                       ToolTip="Alle video's en ondertitels in de gekozen bronmappen volgens de naamregels hernoemen. Je krijgt eerst een overzicht te zien; dubbelen gaan naar de Prullenbak. Er komt een undo-bestand bij."/>
             </StackPanel>
           </StackPanel>

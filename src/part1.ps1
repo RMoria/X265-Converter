@@ -81,7 +81,7 @@ param(
 #  LEESMIJ-X265-Converter.md.
 # ---------------------------------------------------------------------
 $AppName    = 'X265 Converter'
-$AppVersion = '1.10'
+$AppVersion = '1.11'
 $AppDate    = '2026-09-24'
 $AppTitle   = 'Video naar H.265 / HEVC'
 $AppStamp   = ('{0} {1} ({2})' -f $AppName, $AppVersion, $AppDate)
@@ -440,7 +440,11 @@ function Test-Binnengekomen {
 function Plaats-Nieuw {
     param([string]$Tijdelijk, [string]$Doel, [version]$Versie)
 
-    $backup = Join-Path $Doel ('vorige-versie')
+    # De vorige versie gaat alleen TIJDELIJK opzij, in de ophaalmap (die
+    # na afloop hoe dan ook wordt opgeruimd): nodig om terug te rollen als
+    # het vervangen halverwege mislukt, daarna niet meer. Er blijft dus geen
+    # map met een oude versie naast het programma staan.
+    $backup = Join-Path $Tijdelijk '_vorige-versie'
     try { New-Item -ItemType Directory -Path $backup -Force -ErrorAction Stop | Out-Null }
     catch { return "kon geen map voor de vorige versie maken: $($_.Exception.Message)" }
 
@@ -487,6 +491,14 @@ function Plaats-Nieuw {
                 Schrijf 'De starter is vernieuwd; die wordt bij de volgende start omgewisseld.' 'Yellow'
             } catch { }
         }
+    }
+
+    # Een 'vorige-versie'-map van voor v1.11 (toen de oude versie ernaast
+    # bleef staan) mag nu weg.
+    $oud = Join-Path $Doel 'vorige-versie'
+    if (Test-Path -LiteralPath $oud) {
+        try { Remove-Item -LiteralPath $oud -Recurse -Force -ErrorAction Stop; Schrijf 'Oude map vorige-versie opgeruimd.' 'DarkGray' }
+        catch { Schrijf ("Oude map vorige-versie kon niet weg: {0}" -f $_.Exception.Message) 'DarkGray' }
     }
 
     Schrijf ("Bijgewerkt naar versie {0}: {1}" -f $Versie, ($gezet -join ', ')) 'Green'

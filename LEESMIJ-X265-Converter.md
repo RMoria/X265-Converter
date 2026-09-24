@@ -1,8 +1,8 @@
 # Video naar H.265 / HEVC — PowerShell GUI
 
-**Versie 1.10 (24 september 2026)**
+**Versie 1.11 (24 september 2026)**
 
-Het versienummer staat achter in de venstertitel (`… [v1.10]`), als eerste regel
+Het versienummer staat achter in de venstertitel (`… [v1.11]`), als eerste regel
 in de log bij het opstarten, bovenaan `X265-Converter.error.log` en als `Version`
 in het instellingenbestand. Bij een melding is dat het eerste wat je wilt weten.
 Bijwerken gaat met `$AppVersion` en `$AppDate` bovenaan het script: tweede cijfer
@@ -11,6 +11,22 @@ erbij voor nieuw gedrag, derde cijfer voor een reparatie.
 Opvolger van `convert.bat`. Eén PowerShell-script met een grafische interface.
 
 ## Wat er per versie is veranderd
+
+### 1.11 — 24 september 2026
+
+- **Hernoemen: een los nummer blijft een nummer.** `BokuNoHeroAcademia.171`
+  werd `S01E71`; dat verzinnen van een seizoen uit aaneengeschreven cijfers is
+  eruit. Alleen `S01E05` en `1x09` (ook `10x17`) leveren een seizoen op; verder
+  blijft het nummer staan zoals het is (`Naam.171`, `Naam.1407`).
+- **Het VCP-kenmerk blijft staan.** `TheAvengers.VCP.mkv` blijft
+  `TheAvengers.VCP.mkv`; de rest van de naam wordt wel opgeschoond. Het
+  kenmerk is hetzelfde als `VcpMarker` in de instellingen.
+- **Het voorbeeld-CSV wordt opgeruimd** zodra de vraag is beantwoord.
+  Undo-bestanden blijven 30 dagen staan en worden daarna bij het opstarten
+  weggehaald.
+- **Bij het bijwerken blijft er geen oude versie meer staan.** De vorige versie
+  gaat alleen tijdelijk opzij (om terug te kunnen als het vervangen halverwege
+  mislukt) en de map `vorige-versie\` van eerdere versies wordt opgeruimd.
 
 ### 1.10 — 24 september 2026
 
@@ -21,7 +37,7 @@ Opvolger van `convert.bat`. Eén PowerShell-script met een grafische interface.
   toch `<naam>.x265.mkv`. Bestanden van eerdere versies (`.x265.mkv`) worden
   nog steeds herkend als "al omgezet".
 - **Hernoemen volgens de naamregels** (uit `Rename-Media.ps1`, nu ingebouwd):
-  een vinkje *Na conversie hernoemen volgens de naamregels* en een knop
+  een vinkje *Na conversie hernoemen* en een knop
   *Bronmappen hernoemen…*. Zie [Hernoemen volgens de naamregels](#hernoemen-volgens-de-naamregels).
   De regels zijn aan te passen met een delta onder `RenameRules` in het
   instellingenbestand.
@@ -296,8 +312,10 @@ blijven de andere pc's dus op de oude versie staan.
 
 `X265-Converter.ps1` en `LEESMIJ-X265-Converter.md` worden vervangen. Het
 programma bevat de updater zelf, dus met het hoofdbestand komt die automatisch
-mee. De vorige versie gaat eerst naar `vorige-versie\` ernaast, dus je
-kunt altijd terug.
+mee. De vorige versie gaat alleen tijdelijk opzij, in de ophaalmap: mislukt het
+vervangen halverwege, dan wordt die teruggezet. Daarna wordt de ophaalmap
+opgeruimd — er blijft dus geen map met een oude versie naast het programma
+staan. Een `vorige-versie\` van voor v1.11 wordt bij het bijwerken weggehaald.
 
 **De starter wordt nooit rechtstreeks overschreven.** `cmd.exe` leest een
 batchbestand niet in één keer in: het onthoudt een bytepositie en leest na elke
@@ -594,7 +612,7 @@ het resultaat wordt `<naam>.mkv`. Bestaat die naam al, dan komt er `(2)`,
 - **origineel verwijderen uit** — twee bestanden kunnen niet dezelfde naam
   hebben, dus dan wordt het `<naam>.x265.mkv`.
 
-Staat *Na conversie hernoemen volgens de naamregels* aan, dan krijgt het
+Staat *Na conversie hernoemen* aan, dan krijgt het
 resultaat daarna nog zijn nette naam (zie hieronder).
 
 ## Hernoemen volgens de naamregels
@@ -602,7 +620,7 @@ resultaat daarna nog zijn nette naam (zie hieronder).
 Wat eerst het losse `Rename-Media.ps1` was, zit nu in het programma zelf. Twee
 manieren:
 
-- **Vinkje *Na conversie hernoemen volgens de naamregels*** (standaard uit). Elk
+- **Vinkje *Na conversie hernoemen*** (standaard uit). Elk
   omgezet bestand krijgt na de conversie meteen zijn nette naam, samen met zijn
   ondertitels. Dat gebeurt pas ná het verplaatsen en het opruimen van het
   origineel, nog vóór het lock losgaat: het lock hoort bij de naam van de bron,
@@ -613,9 +631,9 @@ manieren:
   hele schijven — alleen wat jij hebt gekozen, met hun submappen) en maakt eerst
   een **overzicht**: niets wordt aangeraakt. Je ziet
   hoeveel er wordt hernoemd, hoeveel dubbelen naar de Prullenbak gaan en hoeveel
-  conflicten er zijn; het volledige overzicht staat in
-  `hernoem_voorbeeld_<tijd>.csv` naast het instellingenbestand. Pas na **Ja**
-  wordt het uitgevoerd. De knop werkt alleen als er niets loopt, en zolang hij
+  conflicten er zijn; het volledige overzicht staat zolang de vraag openstaat
+  in `hernoem_voorbeeld_<tijd>.csv` naast het instellingenbestand (daarna wordt
+  het opgeruimd). Pas na **Ja** wordt het uitgevoerd. De knop werkt alleen als er niets loopt, en zolang hij
   bezig is kan er geen conversie starten.
 
 Bestanden met een lock van een andere pc blijven van tafel, samen met hun
@@ -623,7 +641,8 @@ ondertitels — ook als dat lock er pas tussen overzicht en uitvoeren bij is
 gekomen. Werkbestanden (`x265_*`) doen niet mee.
 
 Elke hernoeming komt in een undo-bestand (`hernoem_undo_<tijd>.csv`, bij de
-automatische stand één per dag). Terugdraaien:
+automatische stand één per dag). Die blijven 30 dagen staan en worden daarna bij
+het opstarten opgeruimd. Terugdraaien:
 
 ```
 powershell -ExecutionPolicy Bypass -File X265-Converter.ps1 -HernoemTerug "hernoem_undo_20260924_101500.csv"
@@ -647,11 +666,13 @@ seizoen bekend is; films worden `CamelCaseNaam.ext` of
    ook de releasegroep erachter. `WEB-DL`, `x265-MeGusta` en `DTS-HD` worden als
    geheel herkend. `END` alleen in hoofdletters, zodat "The End" blijft staan.
 3. **Afleveringsnummer**, eerste treffer wint: `S01E05` (ook `s1e5`, `S01 E05`,
-   `S01E01-E02`); anime met `- 12` (met een seizoen in de naam `Naam S2 - 12` →
-   `Naam.S02E12`); aaneengeschreven `1407` → `S14E07` (geen jaartal); en
-   `Naam.01.Titel`. In een map `film`, `films` of `movies` wordt alleen de eerste
-   gebruikt en is de rest een film. Nummers krijgen minstens 2 cijfers (`5` →
-   `05`), langere houden hun breedte (`0001`).
+   `S01E01-E02`); `1x09` → `S01E09`; anime met `- 12` (met een seizoen in de
+   naam `Naam S2 - 12` → `Naam.S02E12`); en verder een los nummer van 2-4
+   cijfers (geen jaartal), dat **een nummer blijft**: `Naam.171`, geen
+   verzonnen seizoen. In een map `film`, `films` of `movies` gelden alleen
+   `S01E05` en `1x09` en is de rest een film. Nummers krijgen minstens 2 cijfers
+   (`5` → `05`), langere houden hun breedte (`0001`).
+   Een VCP-kenmerk (`Naam.VCP.mkv`) blijft altijd achteraan staan.
 4. **Serienaam.** Woorden aan elkaar in CamelCase (`ONE PIECE` → `OnePiece`),
    jaartallen aan het eind weg, een laatste `S2` wordt het seizoen. Voorvoegsels
    die niet in de mapnaam staan gaan weg: map `Punisher` met

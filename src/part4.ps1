@@ -297,7 +297,7 @@ function Test-LockFree {
 # ---------------------------------------------------------------------
 
 function New-RnRules {
-    param($Delta)
+    param($Delta, [string]$VcpMarker = 'VCP')
 
     $lijsten = [ordered]@{
         VideoExtensions   = @('.mkv', '.mp4', '.avi', '.m4v')
@@ -378,6 +378,9 @@ function New-RnRules {
     $uit.FilmDirRegex      = '(?i)[\\/](?:' + (Samen $uit.FilmDirs) + ')[\\/]'
     $uit.LangRegex         = '(?i)((?:[._ ](?:' + (Samen $uit.LangTags) + '))+)$'
     $uit.YearRegex         = '^(19|20)\d{2}$'
+    # Het VCP-kenmerk zet het programma zelf (<naam>.VCP.mkv); dat moet
+    # bij het hernoemen blijven staan.
+    $uit.VcpMarker         = $(if ([string]::IsNullOrWhiteSpace($VcpMarker)) { 'VCP' } else { $VcpMarker.Trim() })
     $uit.Warnings          = [string[]]@($waarsch)
     return $uit
 }
@@ -556,9 +559,20 @@ function Join-RnParts($show, $ep, $title, $ext, $dirHint) {
 # naam niet te herkennen is.
 function Get-RnNewName([string]$fullPath) {
     $R = Get-RnRules
-    $fileName = (Split-RnPath $fullPath)[1]
+    $parts0   = Split-RnPath $fullPath
+    $fileName = $parts0[1]
     $ext      = [IO.Path]::GetExtension($fileName).ToLower()
     $base     = [IO.Path]::GetFileNameWithoutExtension($fileName)
+
+    # <naam>.VCP.mkv: de rest opschonen en het kenmerk er weer achter zetten
+    $vcp = '.' + [string]$R.VcpMarker
+    if ($R.VcpMarker -and $base.Length -gt $vcp.Length -and $base.EndsWith($vcp, [StringComparison]::OrdinalIgnoreCase)) {
+        $zonder = $base.Substring(0, $base.Length - $vcp.Length)
+        $sep = $parts0[2]; if (-not $sep) { $sep = '\' }
+        $n = Get-RnNewName ($parts0[0] + $sep + $zonder + $ext)
+        if (-not $n) { return $null }
+        return [IO.Path]::GetFileNameWithoutExtension($n) + $vcp + $ext
+    }
     $dirHint  = Get-RnShowDirHint $fullPath
     $isFilm   = $fullPath -match $R.FilmDirRegex
 
@@ -576,6 +590,15 @@ function Get-RnNewName([string]$fullPath) {
         return (Join-RnParts $show $ep $title $ext $dirHint)
     }
 
+    # 1b) 1x09 (ook 01x09): seizoen x aflevering
+    $m = [regex]::Match($work, '(?i)(?<![A-Za-z0-9])(\d{1,2})x(\d{2,3})(?![0-9])')
+    if ($m.Success) {
+        $ep    = 'S{0:D2}E{1}' -f [int]$m.Groups[1].Value, (Format-RnEp $m.Groups[2].Value)
+        $show  = Get-RnShowName $work.Substring(0, $m.Index) $dirHint ([ref]$null)
+        $title = Format-RnTitle (Remove-RnBrackets $work.Substring($m.Index + $m.Length))
+        return (Join-RnParts $show $ep $title $ext $dirHint)
+    }
+
     # 2) Anime: "Naam - 12", "Naam S2 - 12v2", "One Piece - 0001"
     $clean = Remove-RnBrackets $work
     $m = [regex]::Match($clean, '^(?<show>.+)[\s._]-\s*(?<ep>\d{1,4})(?:v\d+)?(?=[\s._]|$)')
@@ -587,17 +610,11 @@ function Get-RnNewName([string]$fullPath) {
         return (Join-RnParts $show $ep '' $ext $dirHint)
     }
 
-    # 3) "Futurama 1407 Titel" -> S14E07  (geen jaartal)
-    $m = [regex]::Match($clean, '^(?<show>.+?)[\s._](?<s>\d{1,2})[^\d\s]?(?<e>\d{2})(?:[\s._](?<rest>.*))?$')
-    if ($m.Success -and -not $isFilm -and ($m.Groups['s'].Value + $m.Groups['e'].Value) -notmatch $R.YearRegex) {
-        $show  = Get-RnShowName $m.Groups['show'].Value $dirHint ([ref]$null)
-        $ep    = 'S{0:D2}E{1}' -f [int]$m.Groups['s'].Value, $m.Groups['e'].Value
-        $title = Format-RnTitle $m.Groups['rest'].Value
-        return (Join-RnParts $show $ep $title $ext $dirHint)
-    }
-
-    # 4) "Death.Note.01.Rebirth" -> DeathNote.01.Rebirth
-    $m = [regex]::Match($clean, '^(?<show>.+?)[\s._](?<ep>\d{2,3})(?:[\s._](?<rest>.*))?$')
+    # 3) Alleen een nummer: "Death.Note.01.Rebirth" -> DeathNote.01.Rebirth,
+    #    "Boku no Hero Academia 171" -> BokuNoHeroAcademia.171. Het nummer
+    #    blijft een nummer: zonder SxxExx of 1x09 wordt er geen seizoen
+    #    verzonnen. Een jaartal telt niet als nummer.
+    $m = [regex]::Match($clean, '^(?<show>.+?)[\s._](?<ep>(?!(?:19|20)\d{2}(?:[\s._]|$))\d{2,4})(?:[\s._](?<rest>.*))?$')
     if ($m.Success -and -not $isFilm) {
         $show  = Get-RnShowName $m.Groups['show'].Value $dirHint ([ref]$null)
         $ep    = Format-RnEp $m.Groups['ep'].Value
@@ -605,7 +622,7 @@ function Get-RnNewName([string]$fullPath) {
         return (Join-RnParts $show $ep $title $ext $dirHint)
     }
 
-    # 5) Film: Naam  of  Naam.Nummer.Titel  (jaartal verdwijnt)
+    # 4) Film: Naam  of  Naam.Nummer.Titel  (jaartal verdwijnt)
     $tokens = Get-RnStopAtJunk (Get-RnNameTokens $clean)
     for ($i = $tokens.Count - 1; $i -ge 1; $i--) {
         if ($tokens[$i] -match $R.YearRegex) { $tokens = @($tokens[0..($i - 1)]); break }

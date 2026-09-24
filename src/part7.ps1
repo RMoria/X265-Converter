@@ -1055,17 +1055,27 @@ $ui.btnRename.Add_Click({
     Update-Buttons
 })
 
+function Remove-HernoemVoorbeeld {
+    # Het voorbeeld-CSV is alleen voor tijdens de vraag; daarna weg. Het
+    # undo-bestand blijft: dat is nodig om terug te kunnen draaien.
+    try {
+        $v = [string]$sync.ScanSettings.PreviewFile
+        if ($v -and (Test-Path -LiteralPath $v)) { Remove-Item -LiteralPath $v -Force -ErrorAction Stop }
+    } catch { }
+}
+
 function Complete-Hernoemen {
     param([string]$Fase)
 
     if ($sync.RenameError) {
+        Remove-HernoemVoorbeeld
         [System.Windows.MessageBox]::Show("Hernoemen is afgebroken:`n`n$($sync.RenameError)", 'Hernoemen', 'OK', 'Error') | Out-Null
         return
     }
 
     if ($Fase -eq 'hernoem-plan') {
         $plan = @($sync.RenamePlan)
-        if ($sync.RenamePlan -eq $null) { Write-Log 'Hernoemen gestopt; er is niets veranderd.'; Set-Status 'Hernoemen gestopt.'; return }
+        if ($sync.RenamePlan -eq $null) { Remove-HernoemVoorbeeld; Write-Log 'Hernoemen gestopt; er is niets veranderd.'; Set-Status 'Hernoemen gestopt.'; return }
 
         $tel = @{}
         foreach ($r in $plan) { $k = ([string]$r.Status -split ' ')[0]; $tel[$k] = 1 + [int]$tel[$k] }
@@ -1083,9 +1093,8 @@ function Complete-Hernoemen {
         foreach ($r in @($plan | Where-Object { $_.Status -like 'CONFLICT*' })) {
             Write-Log ("  conflict: {0} -> {1}  ({2})" -f $r.OldPath, $r.Nieuw, $r.KeptAs) 'WAARS'
         }
-        Write-Log ("Volledig overzicht: {0}" -f $sync.ScanSettings.PreviewFile)
-
         if ($nRen + $nDel -eq 0) {
+            Remove-HernoemVoorbeeld
             Set-Status 'Hernoemen: alles staat al goed.'
             [System.Windows.MessageBox]::Show(("Er valt niets te hernoemen.`n`n{0} al goed, {1} conflict, {2} overgeslagen." -f $nGoed, $nConf, $nOver),
                 'Hernoemen', 'OK', 'Information') | Out-Null
@@ -1096,8 +1105,9 @@ function Complete-Hernoemen {
              ("  {0} bestand(en) hernoemen`n" -f $nRen) +
              ("  {0} dubbel(en) naar de Prullenbak (op een netwerkschijf zijn ze dan echt weg)`n" -f $nDel) +
              ("  {0} conflict(en) en {1} overgeslagen - die blijven zoals ze zijn`n`n" -f $nConf, $nOver) +
-             "Het volledige overzicht staat in:`n$($sync.ScanSettings.PreviewFile)`n`nNu uitvoeren?"
+             "Het volledige overzicht staat zolang deze vraag openstaat in:`n$($sync.ScanSettings.PreviewFile)`n(daarna wordt het opgeruimd)`n`nNu uitvoeren?"
         $a = [System.Windows.MessageBox]::Show($m, 'Bronmappen hernoemen', 'YesNo', 'Question')
+        Remove-HernoemVoorbeeld
         if ($a -ne 'Yes') {
             Write-Log 'Hernoemen niet uitgevoerd; er is niets veranderd.'
             Set-Status 'Hernoemen niet uitgevoerd.'

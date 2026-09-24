@@ -578,12 +578,22 @@ if ($saved -ne $null) {
 # De naamregels: standaard plus de delta uit het instellingenbestand.
 # Staat er iets onbruikbaars in de delta, dan wordt dat genegeerd en
 # gemeld; het programma start gewoon.
-try { $sync.RenameRules = New-RnRules $script:RenameRulesDelta }
+try { $sync.RenameRules = New-RnRules $script:RenameRulesDelta ([string]$script:VcpMarker) }
 catch {
     Write-Log ("RenameRules in het instellingenbestand onbruikbaar ({0}); de standaardregels worden gebruikt." -f $_.Exception.Message) 'WAARS'
-    $sync.RenameRules = New-RnRules $null
+    $sync.RenameRules = New-RnRules $null ([string]$script:VcpMarker)
 }
 foreach ($w in @($sync.RenameRules.Warnings)) { Write-Log ('Naamregels: ' + $w) 'WAARS' }
+
+# Opruimen van de hernoem-CSV's: een achtergebleven voorbeeld (programma
+# tijdens de vraag afgesloten) altijd, undo-bestanden na 30 dagen.
+try {
+    foreach ($f in @(Get-ChildItem -LiteralPath $DataDir -File -Filter 'hernoem_*.csv' -ErrorAction SilentlyContinue)) {
+        $weg = ($f.Name -like 'hernoem_voorbeeld_*') -or
+               ($f.Name -like 'hernoem_undo_*' -and $f.LastWriteTime -lt (Get-Date).AddDays(-30))
+        if ($weg) { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue }
+    }
+} catch { }
 
 # ---------------------------------------------------------------------
 # 11b. Bewaarde wachtrij terugzetten

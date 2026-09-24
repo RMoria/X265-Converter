@@ -120,6 +120,9 @@ Set-Content '/tmp/up/nieuw/LEESMIJ-X265-Converter.md' 'nieuwe leesmij'
 Set-Content '/tmp/up/nieuw/Bijwerken.ps1'             '# nieuwe updater'
 Set-Content '/tmp/up/nieuw/X265-Converter.cmd'        'nieuwe starter'
 
+# een achtergebleven map van voor v1.11 hoort mee opgeruimd te worden
+New-Item -ItemType Directory -Path '/tmp/up/doel/vorige-versie' -Force | Out-Null
+Set-Content '/tmp/up/doel/vorige-versie/X265-Converter.ps1' 'heel oud'
 $klacht = Plaats-Nieuw -Tijdelijk '/tmp/up/nieuw' -Doel '/tmp/up/doel' -Versie ([version]'1.5')
 Check 'geen klacht'               ($klacht -eq '')                                      "($klacht)"
 Check 'script vervangen'          ((Get-VersieUitScript '/tmp/up/doel/X265-Converter.ps1') -eq [version]'1.5')
@@ -130,7 +133,8 @@ Check 'leesmij vervangen'         ((Get-Content -Raw '/tmp/up/doel/LEESMIJ-X265-
 Check 'los updaterbestand blijft af' ((Get-Content -Raw '/tmp/up/doel/Bijwerken.ps1').Trim() -eq '# oude updater')
 Check 'starter NIET overschreven' ((Get-Content -Raw '/tmp/up/doel/X265-Converter.cmd').Trim() -eq 'oude starter')
 Check 'starter klaargezet als .nieuw' (Test-Path '/tmp/up/doel/X265-Converter.cmd.nieuw')
-Check 'vorige versie bewaard'     ((Get-VersieUitScript '/tmp/up/doel/vorige-versie/X265-Converter.ps1') -eq [version]'1.4')
+Check 'geen map met de oude versie' (-not (Test-Path '/tmp/up/doel/vorige-versie'))
+Check 'terugrol-kopie in de ophaalmap' ((Get-VersieUitScript '/tmp/up/nieuw/_vorige-versie/X265-Converter.ps1') -eq [version]'1.4')
 ''
 
 '--- 6. gelijke starter wordt niet klaargezet ---'
@@ -259,7 +263,7 @@ Check 'en het is geldig PowerShell' ((Test-Binnengekomen -Tijdelijk '/tmp/up/e2e
 Check 'leesmij ook vervangen'      ((Get-Content -Raw '/tmp/up/e2e/LEESMIJ-X265-Converter.md') -notmatch 'stokoude')
 Check 'starter niet overschreven'  ((Get-Content -Raw '/tmp/up/e2e/X265-Converter.cmd').Trim() -eq 'stokoude starter')
 Check 'maar wel klaargezet'        (Test-Path '/tmp/up/e2e/X265-Converter.cmd.nieuw')
-Check 'vorige versie bewaard'      ((Get-VersieUitScript '/tmp/up/e2e/vorige-versie/X265-Converter.ps1') -eq [version]'1.0')
+Check 'geen oude versie ernaast'   (-not (Test-Path '/tmp/up/e2e/vorige-versie'))
 Check 'geen los updaterbestand'    (-not (Test-Path '/tmp/up/e2e/Bijwerken.ps1'))
 Check 'staat in het logboek'       (((LeesLog '/tmp/up/e2e/X265-Bijwerken.log') -join ' ') -match 'Bijgewerkt naar versie')
 
